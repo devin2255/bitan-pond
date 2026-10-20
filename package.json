@@ -1,0 +1,39 @@
+{
+  "name": "bitan-pond",
+  "version": "1.0.0",
+  "description": "鱼戏莲叶间：会跟着天气变化的桌面池塘",
+  "main": "main.js",
+  "author": "local",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "local.bitan.pond",
+    "productName": "鱼戏莲叶间",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "wallpaper.ps1",
+      "desk-input.cs",
+      "web/**"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "executableName": "鱼戏莲叶间",
+      "signAndEditExecutable": false
+    },
+    "portable": {
+      "artifactName": "鱼戏莲叶间.exe"
+    }
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  }
+}

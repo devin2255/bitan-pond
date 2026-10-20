@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>鱼戏莲叶间</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <canvas id="pond"></canvas>
+  <div id="tint"></div>
+
+  <div class="brand">鱼戏莲叶间</div>
+  <div id="hint" class="hint">单击水面投喂 · 光标靠近时锦鲤会散开 · 右键可以打开菜单</div>
+  <div id="tip" class="tip hidden"></div>
+  <div id="toast" class="toast hidden"></div>
+  <div id="menu" class="menu hidden"></div>
+
+  <aside class="journal" id="journal">
+    <div class="j-top">
+      <div class="j-kicker">池畔小记</div>
+      <button id="btn-demo" class="icon-btn" type="button" title="天气演示" aria-label="天气演示">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5 5l1.6 1.6M17.4 17.4L19 19M19 5l-1.6 1.6M6.6 17.4L5 19" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="j-time-row">
+      <div class="j-time" id="clock">--:--</div>
+      <div class="j-tz" id="tz-label">北京时间</div>
+    </div>
+    <div class="j-date" id="date-label"></div>
+    <div class="j-place" id="place-label">正在看向水面</div>
+    <div class="j-now" id="now-label">天气加载中</div>
+    <div class="j-days" id="days"></div>
+    <div class="j-updated" id="updated">每半小时刷新</div>
+    <div class="j-foot">
+      <span>天气数据 · Open-Meteo</span>
+      <button id="btn-city" type="button">设置</button>
+    </div>
+    <div class="j-actions">
+      <button id="btn-rank" type="button">排行榜</button>
+      <button id="btn-koi" type="button">我的锦鲤</button>
+    </div>
+    <div id="demo-menu" class="demo hidden" role="menu"></div>
+  </aside>
+
+  <div id="overlay-city" class="overlay hidden">
+    <div class="panel panel-city" role="dialog" aria-labelledby="city-title">
+      <button class="x" type="button" data-close="overlay-city" aria-label="关闭">×</button>
+      <h2 id="city-title">你所在的城市</h2>
+      <p class="sub">选择城市，看看今天与未来两天的天气。</p>
+      <label class="field-label" for="city-input">城市名称</label>
+      <div class="search-row">
+        <input id="city-input" type="text" maxlength="20" placeholder="输入中文或拼音，如：杭州" />
+        <button id="city-search" type="button">搜索</button>
+      </div>
+      <div id="city-results" class="results"></div>
+      <div class="chips" id="city-chips"></div>
+      <label class="radio">
+        <input id="use-geo" type="radio" name="place-mode" />
+        <span>使用当前位置</span>
+      </label>
+      <p class="fine">定位只用于向 Open-Meteo 查询当地天气，精度大约 10 公里。城市选择保存在这台电脑上。</p>
+    </div>
+  </div>
+
+  <div id="overlay-rank" class="overlay hidden">
+    <div class="panel panel-rank" role="dialog" aria-labelledby="rank-title">
+      <button class="x" type="button" data-close="overlay-rank" aria-label="关闭">×</button>
+      <div class="eyebrow">POND JOURNAL · TOP 10</div>
+      <h2 id="rank-title">今天，谁吃得最香？</h2>
+      <p class="sub">按这次打开后吃到的鱼粮排序，实时更新。重新打开软件会重新计数，吃得一样多时按编号排序。</p>
+      <div class="rank-head"><span>锦鲤</span><span>吃到鱼粮</span></div>
+      <ol id="rank-list" class="rank-list"></ol>
+      <div id="rank-foot" class="rank-foot"></div>
+    </div>
+  </div>
+
+  <div id="overlay-koi" class="overlay hidden">
+    <div class="panel panel-koi" role="dialog" aria-labelledby="koi-title">
+      <button class="x" type="button" data-close="overlay-koi" aria-label="关闭">×</button>
+      <div class="eyebrow">MY KOI</div>
+      <h2 id="koi-title">画一条自己的锦鲤</h2>
+      <p class="sub">在鱼身上画颜色和花纹。放入水中后，它会和其他锦鲤一起游动、避让和吃食。</p>
+      <div class="stage">
+        <canvas id="koi-view" width="640" height="280"></canvas>
+      </div>
+      <div class="sliders">
+        <label><span id="size-label">鱼的大小 100%</span><input id="body-scale" type="range" min="40" max="220" value="100" /></label>
+        <label>斑点大小 <input id="brush-size" type="range" min="6" max="36" value="16" /></label>
+      </div>
+      <div class="tool-row">
+        <div class="swatches" id="swatches"></div>
+        <div class="tools">
+          <button type="button" data-tool="brush" class="on">笔刷</button>
+          <button type="button" data-tool="eraser">橡皮</button>
+          <button type="button" id="btn-flip">翻转</button>
+          <button type="button" id="btn-clear">清空</button>
+        </div>
+      </div>
+      <label class="field-label" for="koi-name">给锦鲤起个名字</label>
+      <div class="search-row">
+        <input id="koi-name" type="text" maxlength="14" placeholder="例如：小满、青团" />
+        <button id="btn-random-name" type="button">随机起名</button>
+      </div>
+      <p class="fine">最多 14 个字。留空时会自动取一个名字。只画在鱼身上的颜色会被带走。</p>
+      <div class="koi-submit">
+        <button id="btn-release" type="button">放入鱼池</button>
+      </div>
+      <div class="gallery-block">
+        <div class="gallery-title">我自定义的锦鲤</div>
+        <p class="fine">删除后会同时从鱼池里游走。</p>
+        <div id="gallery" class="gallery"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="pond.js"></script>
+  <script src="ui.js"></script>
+</body>
+</html>
