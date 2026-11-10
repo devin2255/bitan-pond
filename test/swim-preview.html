@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>鱼群动作检查</title>
+<style>
+  body { margin: 0; background: #163e43; color: #e9f5ef; font: 14px "Microsoft YaHei", sans-serif; }
+  main { max-width: 1100px; margin: 12px auto; }
+  h1 { font-size: 19px; margin: 0 0 6px; }
+  p { margin: 0 0 8px; color: #b8d6ca; }
+  canvas { width: 100%; height: auto; display: block; border-radius: 12px; }
+</style>
+<main>
+  <h1>鱼群动作检查</h1>
+  <p>同一种鱼的四个连续摆尾阶段；使用池塘里的同一套绘制和速度逻辑。</p>
+  <canvas id="preview" width="1100" height="640"></canvas>
+</main>
+<script src="../web/fish-motion.js"></script>
+<script>
+  const canvas = document.querySelector("canvas"), ctx = canvas.getContext("2d");
+  const bounds = { x0: -78, x1: 48 };
+  const rows = [
+    { id: "goldfish", label: "金鱼", src: "../web/fish-goldfish.png" },
+    { id: "grasscarp", label: "草鱼", src: "../web/fish-grasscarp.png" },
+    { id: "guppy", label: "孔雀鱼", src: "../web/fish-guppy.png" },
+    { id: "betta", label: "斗鱼", src: "../web/fish-betta.png" },
+  ];
+
+  function normalize(image) {
+    const scale = Math.min(1, 640 / Math.max(image.naturalWidth, image.naturalHeight));
+    const source = document.createElement("canvas");
+    source.width = Math.round(image.naturalWidth * scale); source.height = Math.round(image.naturalHeight * scale);
+    const g = source.getContext("2d", { willReadFrequently: true });
+    g.drawImage(image, 0, 0, source.width, source.height);
+    const data = g.getImageData(0, 0, source.width, source.height).data;
+    let x0 = source.width, x1 = -1, y0 = source.height, y1 = -1;
+    for (let y = 0; y < source.height; y++) for (let x = 0; x < source.width; x++) {
+      if (data[(y * source.width + x) * 4 + 3] < 20) continue;
+      x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+    }
+    const sprite = document.createElement("canvas"); sprite.width = 378; sprite.height = 168;
+    const sw = x1 - x0 + 1, sh = y1 - y0 + 1, k = Math.min(366 / sw, 156 / sh);
+    sprite.getContext("2d").drawImage(source, x0, y0, sw, sh, (378 - sw * k) / 2, (168 - sh * k) / 2, sw * k, sh * k);
+    return sprite;
+  }
+
+  rows.forEach((row, i) => {
+    const image = new Image(); image.onload = () => { row.sprite = normalize(image); }; image.src = row.src;
+    row.motion = PondFishMotion.create(60, i * 1.4, () => 0.5);
+  });
+  let last = 0;
+  function frame(ms) {
+    const dt = Math.min(0.033, last ? (ms - last) / 1000 : 0.016); last = ms;
+    const water = ctx.createLinearGradient(0, 0, 1100, 640);
+    water.addColorStop(0, "#78c9bd"); water.addColorStop(1, "#35998f");
+    ctx.fillStyle = water; ctx.fillRect(0, 0, 1100, 640);
+    ctx.font = "14px Microsoft YaHei"; ctx.fillStyle = "rgba(241,255,247,.9)";
+    for (let col = 0; col < 4; col++) ctx.fillText("摆尾阶段 " + (col + 1), 196 + col * 220, 27);
+    rows.forEach((row, index) => {
+      PondFishMotion.advance(row.motion, 60, 1, false, dt, row.id, () => 0.5);
+      const y = 112 + index * 142;
+      ctx.fillStyle = "rgba(241,255,247,.9)"; ctx.font = "17px Microsoft YaHei"; ctx.fillText(row.label, 22, y + 5);
+      if (!row.sprite) return;
+      for (let col = 0; col < 4; col++) {
+        const pose = { ...row.motion, phase: row.motion.phase + col * Math.PI / 2, finPhase: row.motion.finPhase + col * Math.PI / 2 };
+        ctx.save(); ctx.translate(255 + col * 220, y); ctx.scale(1.45, 1.45);
+        PondFishMotion.draw(ctx, row.sprite, pose, row.id, bounds); ctx.restore();
+      }
+    });
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>
+</html>

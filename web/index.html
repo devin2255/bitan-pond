@@ -4,14 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>鱼戏莲叶间</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=fish2" />
 </head>
 <body>
   <canvas id="pond"></canvas>
   <div id="tint"></div>
 
   <div class="brand">鱼戏莲叶间</div>
-  <div id="hint" class="hint">单击水面投喂 · 光标靠近时锦鲤会散开 · 右键可以打开菜单</div>
+  <div id="hint" class="hint">单击水面投喂 · 光标靠近时鱼群会散开 · 右键可以打开菜单</div>
   <div id="tip" class="tip hidden"></div>
   <div id="toast" class="toast hidden"></div>
   <div id="menu" class="menu hidden"></div>
@@ -19,7 +19,7 @@
   <aside class="journal" id="journal">
     <div class="j-top">
       <div class="j-kicker">池畔小记</div>
-      <button id="btn-demo" class="icon-btn" type="button" title="天气演示" aria-label="天气演示">
+      <button id="btn-demo" class="icon-btn" type="button" title="天气与季节演示" aria-label="天气与季节演示">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5 5l1.6 1.6M17.4 17.4L19 19M19 5l-1.6 1.6M6.6 17.4L5 19" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
       </button>
     </div>
@@ -39,6 +39,7 @@
     <div class="j-actions">
       <button id="btn-rank" type="button">排行榜</button>
       <button id="btn-koi" type="button">我的锦鲤</button>
+      <button id="btn-fish" type="button">鱼群</button>
     </div>
     <div id="demo-menu" class="demo hidden" role="menu"></div>
   </aside>
@@ -69,9 +70,24 @@
       <div class="eyebrow">POND JOURNAL · TOP 10</div>
       <h2 id="rank-title">今天，谁吃得最香？</h2>
       <p class="sub">按这次打开后吃到的鱼粮排序，实时更新。重新打开软件会重新计数，吃得一样多时按编号排序。</p>
-      <div class="rank-head"><span>锦鲤</span><span>吃到鱼粮</span></div>
+      <div class="rank-head"><span>鱼群</span><span>吃到鱼粮</span></div>
       <ol id="rank-list" class="rank-list"></ol>
       <div id="rank-foot" class="rank-foot"></div>
+    </div>
+  </div>
+
+  <div id="overlay-fish" class="overlay hidden">
+    <div class="panel panel-fish" role="dialog" aria-modal="true" aria-labelledby="fish-title">
+      <button class="x" type="button" data-close="overlay-fish" aria-label="关闭">×</button>
+      <div class="eyebrow">POND LIFE</div>
+      <h2 id="fish-title">鱼群设置</h2>
+      <p class="sub">设置每种普通鱼的初始数量。保存后立即调整，下次打开也会记住；自己画的锦鲤会保留。</p>
+      <div id="fish-counts" class="fish-counts"></div>
+      <p id="fish-count-status" class="fish-count-status" role="status" aria-live="polite"></p>
+      <div class="fish-count-actions">
+        <button id="fish-defaults" type="button">恢复默认</button>
+        <button id="fish-save" type="button">保存设置</button>
+      </div>
     </div>
   </div>
 
@@ -80,7 +96,7 @@
       <button class="x" type="button" data-close="overlay-koi" aria-label="关闭">×</button>
       <div class="eyebrow">MY KOI</div>
       <h2 id="koi-title">画一条自己的锦鲤</h2>
-      <p class="sub">在鱼身上画颜色和花纹。放入水中后，它会和其他锦鲤一起游动、避让和吃食。</p>
+      <p class="sub">在鱼身上画颜色和花纹。放入水中后，它会和鱼群一起游动、避让和吃食。</p>
       <div class="stage">
         <canvas id="koi-view" width="640" height="280"></canvas>
       </div>
@@ -114,7 +130,10 @@
     </div>
   </div>
 
-  <script src="pond.js"></script>
-  <script src="ui.js"></script>
+  <script src="seasons.js?v=1"></script>
+  <script src="fish-species.js?v=2"></script>
+  <script src="fish-motion.js?v=1"></script>
+  <script src="pond.js?v=swim1"></script>
+  <script src="ui.js?v=fish2"></script>
 </body>
 </html>

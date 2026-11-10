@@ -10,7 +10,14 @@
     clockAt: 0,
     timeMode: "auto",
     moonMode: "auto",
+    seasonMode: "auto",
+    latitude: null,
+    temperature: null,
   };
+
+  let seasonWeights = null;
+  let seasonTarget = null;
+  let seasonCheckAt = 0;
 
   let canvas, ctx, W = 0, H = 0, dpr = 1;
   let bg;
@@ -19,6 +26,7 @@
   const fishes = [];
   const turtles = [];
   const butterflies = [];
+  const dragonflies = [];
   const groups = [0, 1, 2].map(() => ({ x: 400, y: 300, tx: 400, ty: 300 }));
   let pellets = [];
   let ripples = [];
@@ -31,8 +39,12 @@
   let splashes = [];
   let scares = [];
   let leaves = [];
+  let autumnLeaves = [];
+  let autumnLeafTimer = 2;
   let fog = [];
   let nextNum = 1;
+  let configuredFishCounts = PondFish.defaults();
+  let reservedCustomNums = new Set();
   let onEat = null;
   let onRoster = null;
   const mouse = { x: -9999, y: -9999, inside: false, movedAt: 0 };
@@ -50,6 +62,34 @@
   }
 
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+  function updateSeason(dt) {
+    const now = Date.now();
+    if (!seasonTarget || now >= seasonCheckAt) {
+      seasonTarget = PondSeasons.resolve(new Date(now), state.tz, state.latitude, state.seasonMode);
+      seasonCheckAt = now + 60000;
+      if (!seasonWeights) seasonWeights = Object.assign({}, seasonTarget);
+    }
+    const rate = Math.min(1, dt * 2.2);
+    PondSeasons.names.forEach((name) => { seasonWeights[name] += (seasonTarget[name] - seasonWeights[name]) * rate; });
+  }
+
+  function leafAppearance(pc) {
+    const w = seasonWeights || { spring: 0, summer: 1, autumn: 0, winter: 0 };
+    const rank = pc.seasonRank == null ? hash01(pc.cx * 0.37 + pc.cy * 0.63) : pc.seasonRank;
+    const dryRank = pc.dryRank == null ? hash01(pc.cx * 0.71 + pc.cy * 0.19) : pc.dryRank;
+    const spring = rank < 0.7 ? w.spring : 0;
+    const autumn = rank < 0.82 ? w.autumn : 0;
+    const winter = rank < 0.13 ? w.winter : 0;
+    const alpha = spring + w.summer + autumn + winter;
+    if (alpha < 0.001) return { alpha: 0, scale: 0.65, dry: 0 };
+    return {
+      alpha,
+      scale: (spring * 0.72 + w.summer + autumn * 0.92 + winter * 0.68) / alpha,
+      dry: ((dryRank < 0.48 ? autumn : 0) + winter) / alpha,
+    };
+  }
+
   let VIEW = 0.42;
   const TURTLE_LEN = 70;
 
@@ -145,7 +185,7 @@
     return { x: px, y: py };
   }
 
-  function moveInWater(obj, nx, ny) {
+  function moveInWater(obj, nx, ny, dt) {
     const pad = bodyPad(obj);
     if (roomFor(nx, ny, pad)) {
       obj.x = nx;
@@ -165,7 +205,13 @@
       obj.x += (c.x - obj.x) * 0.12;
       obj.y += (c.y - obj.y) * 0.12;
     }
-    obj.a = Math.atan2(c.y - obj.y, c.x - obj.x);
+    const target = Math.atan2(c.y - obj.y, c.x - obj.x);
+    if (obj.motion && dt > 0) {
+      let diff = target - obj.a;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      obj.a += clamp(diff, -2.2 * dt, 2.2 * dt);
+    } else obj.a = target;
   }
 
   function pushWake(x, y, angle, strength) {
@@ -177,6 +223,8 @@
   let seats = [];
   let pondBase = null;
   let leafPieces = [];
+  let blooms = [];
+  let soloPads = null;
   let leafRest = null;
   let leafId = null;
   let leafS = 0;
@@ -256,7 +304,19 @@
     const ix = Math.floor((x / W) * cover.w);
     const iy = Math.floor((y / H) * cover.h);
     if (ix < 0 || iy < 0 || ix >= cover.w || iy >= cover.h) return false;
-    return cover.m[iy * cover.w + ix] === 1;
+    const at = iy * cover.w + ix;
+    if (!leafId || !leafPieces.length) return cover.m[at] === 1;
+    const index = leafId[at];
+    const pc = index >= 0 ? leafPieces[index] : null;
+    if (!pc) return false;
+    const look = leafAppearance(pc);
+    if (look.alpha < 0.35) return false;
+    // Leaf images shrink around their centres in spring and winter. Map the
+    // point back to the original mask so bare water is actually clickable.
+    const px = pc.cx + (x - pc.cx) / look.scale;
+    const py = pc.cy + (y - pc.cy) / look.scale;
+    const mx = Math.floor((px / W) * cover.w), my = Math.floor((py / H) * cover.h);
+    return mx >= 0 && my >= 0 && mx < cover.w && my < cover.h && leafId[my * cover.w + mx] === index;
   }
 
   function makeCanvas(w, h) {
@@ -449,7 +509,7 @@
 
   function leafMove(idx, x, y) {
     const pc = idx >= 0 ? leafPieces[idx] : null;
-    if (!pc || leafS < 0.01) return { x: x, y: y, rot: 0 };
+    if (!pc) return { x: x, y: y, rot: 0 };
     const c = Math.cos(pc.rot);
     const s = Math.sin(pc.rot);
     const rx = x - pc.cx;
@@ -459,48 +519,150 @@
 
   function leafTarget() {
     if (state.effect === "snow") return 0;
-    const base = { wind: 1, rain: 0.42, drizzle: 0.16 }[state.effect] || 0;
-    return Math.max(base, clamp((state.wind - 18) / 45, 0, 0.6));
+    if (state.effect === "wind") return Math.max(0.85, clamp((state.wind || 40) / 36, 0, 1));
+    return clamp((state.wind || 0) / 36, 0, 1);
+  }
+
+  function rainKick() {
+    if (state.effect === "rain") return 1;
+    if (state.effect === "drizzle") return 0.38;
+    return 0;
   }
 
   function updateLeaves(dt, t) {
-    leafS += (leafTarget() - leafS) * Math.min(1, dt * 0.9);
-    if (leafS < 0.01) return;
-    const S = leafS;
+    const sway = leafTarget();
+    leafS += (sway - leafS) * Math.min(1, dt * 0.9);
+    const rain = rainKick();
     leafPieces.forEach((pc) => {
       if (!pc) return;
       const gust = 0.5 + 0.5 * Math.sin(t * 1.15 - pc.cx * 0.0042 - pc.cy * 0.0016);
       const g2 = gust * gust;
-      pc.bob = Math.max(0, pc.bob - dt * 2.4);
-      const flutter = Math.sin(t * (2.4 + pc.k) + pc.p);
-      pc.dx = S * pc.k * (2 + 7 * g2 + 2.2 * flutter);
-      pc.dy = S * pc.k * (1.8 * Math.sin(t * 1.9 + pc.p * 1.7) + 1.4 * g2) + pc.bob * Math.sin(t * 22 + pc.p) * 0.9;
-      pc.rot = S * pc.k * 0.08 * Math.sin(t * 2.1 + pc.p) * (0.4 + g2) + pc.bob * 0.012 * Math.sin(t * 19 + pc.p);
-      pc.lift = S * clamp((g2 - 0.45) * 2, 0, 1) * Math.max(0, flutter);
+      pc.bob = Math.max(0, pc.bob - dt * (rain > 0.7 ? 0.7 : 2.2));
+      const flutter = Math.sin(t * (1.5 + pc.k * 0.35) + pc.p);
+      const S = leafS;
+      pc.dx = S * (10 + 26 * g2) * Math.sin(t * 1.25 + pc.p) + pc.bob * rain * 5 * Math.sin(t * 4.2 + pc.p);
+      pc.dy = S * (6 + 12 * g2) * Math.sin(t * 1.55 + pc.p * 1.4) + pc.bob * rain * 2.5 * Math.sin(t * 3.6 + pc.p);
+      pc.rot = S * (0.08 + 0.34 * g2) * Math.sin(t * 1.35 + pc.p) + pc.bob * rain * 0.09 * Math.sin(t * 4 + pc.p);
+      pc.lift = S * clamp((g2 - 0.55) * 1.4, 0, 1) * Math.max(0, flutter) + pc.bob * rain * 0.08;
     });
   }
 
-  function drawLeaves() {
-    if (leafRest) ctx.drawImage(leafRest, 0, 0, W, H);
+  function drawOneLeaf(pc) {
+    const look = leafAppearance(pc);
+    if (look.alpha < 0.01) return;
     ctx.save();
-    leafPieces.forEach((pc) => {
-      if (!pc) return;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.translate(pc.cx + pc.dx, pc.cy + pc.dy);
-      ctx.rotate(pc.rot);
-      if (pc.lift > 0.03) ctx.scale(1 - pc.lift * 0.05, 1 + pc.lift * 0.015);
-      const x = pc.ox - pc.cx;
-      const y = pc.oy - pc.cy;
-      ctx.globalAlpha = 1;
-      ctx.globalCompositeOperation = "source-over";
-      ctx.drawImage(pc.canvas, x, y);
-      if (pc.lift > 0.03) {
-        ctx.globalAlpha = pc.lift * 0.32;
-        ctx.globalCompositeOperation = "screen";
-        ctx.drawImage(pc.canvas, x, y);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.translate(pc.cx + pc.dx, pc.cy + pc.dy);
+    ctx.rotate(pc.rot);
+    if (pc.lift > 0.03) ctx.scale(1 - pc.lift * 0.05, 1 + pc.lift * 0.015);
+    ctx.scale(look.scale, look.scale);
+    const x = pc.ox - pc.cx;
+    const y = pc.oy - pc.cy;
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = "source-over";
+    if (realistic) {
+      ctx.save();
+      ctx.filter = "blur(8px) brightness(0)";
+      ctx.globalAlpha = 0.3 * look.alpha;
+      ctx.drawImage(pc.canvas, x + 6, y + 9);
+      ctx.restore();
+    }
+    ctx.globalAlpha = look.alpha * (pc.dryCanvas ? 1 - look.dry : 1);
+    if (!pc.dryCanvas && look.dry > 0.5) ctx.filter = "sepia(0.7) saturate(0.75) brightness(0.85)";
+    ctx.drawImage(pc.canvas, x, y);
+    ctx.filter = "none";
+    if (pc.dryCanvas && look.dry > 0.01) {
+      ctx.globalAlpha = look.alpha * look.dry;
+      if (seasonWeights && seasonWeights.winter > 0.01) {
+        ctx.filter = "saturate(" + (1 - seasonWeights.winter * 0.4).toFixed(2) + ") brightness(" + (1 - seasonWeights.winter * 0.16).toFixed(2) + ")";
       }
-    });
+      ctx.drawImage(pc.dryCanvas, x, y);
+      ctx.filter = "none";
+    }
+    // Snow follows visible leaves, rather than the summer-only cover mask.
+    if (snowLevel > 0.01) {
+      ctx.save();
+      ctx.globalAlpha = look.alpha * Math.min(0.6, snowLevel * 0.65);
+      ctx.filter = "grayscale(0.8) brightness(2.25)";
+      ctx.drawImage(look.dry > 0.5 && pc.dryCanvas ? pc.dryCanvas : pc.canvas, x, y);
+      ctx.restore();
+    }
+    if (pc.lift > 0.03) {
+      ctx.save();
+      ctx.globalAlpha = look.alpha * pc.lift * 0.32;
+      ctx.globalCompositeOperation = "screen";
+      ctx.drawImage(pc.canvas, x, y);
+      ctx.restore();
+    }
     ctx.restore();
+  }
+
+  function drawLeafBlooms(idx) {
+    for (let i = 0; i < blooms.length; i++) {
+      const f = blooms[i];
+      if (f.leaf !== idx || !f.sprite) continue;
+      const at = leafMove(idx, f.x, f.y);
+      ctx.save();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.translate(at.x, at.y);
+      ctx.rotate(f.rot + (at.rot || 0));
+      ctx.drawImage(f.sprite, -f.size / 2, -f.size / 2, f.size, f.size);
+      ctx.restore();
+    }
+  }
+
+  function drawLeaves() {
+    if (leafRest) {
+      const w = seasonWeights || { spring: 0, summer: 1, autumn: 0, winter: 0 };
+      ctx.save(); ctx.globalAlpha = w.summer + w.spring * 0.5 + w.autumn * 0.65 + w.winter * 0.1;
+      ctx.drawImage(leafRest, 0, 0, W, H); ctx.restore();
+    }
+    const order = [];
+    for (let i = 0; i < leafPieces.length; i++) {
+      if (!leafPieces[i]) continue;
+      order.push({ leaf: i, y: leafPieces[i].cy });
+    }
+    for (let i = 0; i < blooms.length; i++) {
+      const host = blooms[i].leaf;
+      const y = host >= 0 && leafPieces[host] ? leafPieces[host].cy - 0.25 : blooms[i].y;
+      order.push({ bloom: i, y: y });
+    }
+    order.sort((a, b) => a.y - b.y);
+    for (let n = 0; n < order.length; n++) {
+      const item = order[n];
+      if (item.leaf != null) drawOneLeaf(leafPieces[item.leaf]);
+      else {
+        const f = blooms[item.bloom];
+        if (!f || !f.sprite) continue;
+        const at = leafMove(f.leaf, f.x, f.y);
+        ctx.save();
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.translate(at.x, at.y);
+        ctx.rotate(f.rot + (at.rot || 0));
+        const w = seasonWeights || { spring: 0, summer: 1, autumn: 0, winter: 0 };
+        const flowerAlpha = w.summer + w.autumn * 0.08;
+        if (flowerAlpha > 0.01) {
+          ctx.globalAlpha = flowerAlpha;
+          ctx.drawImage(f.sprite, -f.size / 2, -f.size / 2, f.size, f.size);
+          if (photoReady(budTex) && hash01(f.x * 0.53 + f.y * 0.77) < 0.55) {
+            const bw = f.size * 0.32, bh = bw * 0.74;
+            ctx.drawImage(budTex, f.size * 0.38 - bw / 2, f.size * 0.27 - bh / 2, bw, bh);
+          }
+        }
+        const podAlpha = w.autumn * 0.76 + w.winter * 0.88;
+        if (podAlpha > 0.01 && photoReady(seedpodTex)) {
+          const pw = f.size * 0.7, ph = pw * seedpodTex.naturalHeight / seedpodTex.naturalWidth;
+          ctx.globalAlpha = podAlpha;
+          ctx.drawImage(seedpodTex, -pw / 2, -ph / 2, pw, ph);
+          if (snowLevel > 0.01) {
+            ctx.globalAlpha = podAlpha * Math.min(0.55, snowLevel * 0.6);
+            ctx.filter = "grayscale(0.9) brightness(2.3)";
+            ctx.drawImage(seedpodTex, -pw / 2, -ph / 2, pw, ph);
+          }
+        }
+        ctx.restore();
+      }
+    }
   }
 
   function dropSmall(m, mw, target, maxSize) {
@@ -527,14 +689,14 @@
     }
   }
 
-  function buildCover() {
+  function buildCover(source) {
     const mw = 640;
     const mh = Math.max(1, Math.round((mw * H) / W));
     const small = document.createElement("canvas");
     small.width = mw;
     small.height = mh;
     const sg = small.getContext("2d");
-    sg.drawImage(bg, 0, 0, mw, mh);
+    sg.drawImage(source, 0, 0, mw, mh);
     const px = sg.getImageData(0, 0, mw, mh).data;
     let m = new Uint8Array(mw * mh);
     const pink = new Uint8Array(mw * mh);
@@ -562,7 +724,7 @@
       alpha.data[i * 4 + 3] = m[i] ? 255 : 0;
     }
     sg.putImageData(alpha, 0, 0);
-    cover = { m: m, w: mw, h: mh, canvas: small, pink: pink };
+    return { m: m, w: mw, h: mh, canvas: small, pink: pink };
   }
 
   function shade(hex, amt) {
@@ -604,24 +766,352 @@
   }
 
   let bedPhoto = new Image();
-  bedPhoto.onload = function () {
-    if (W) bakeBackground();
-  };
-  bedPhoto.src = "bed.jpg";
+  let bedTex = new Image();
+  let leafTexA = new Image();
+  let leafTexB = new Image();
+  let flowerTex = new Image();
+  let flowerTexB = new Image();
+  let autumnLeafTex = new Image();
+  let seedpodTex = new Image();
+  let budTex = new Image();
+  let cutLeafA = null;
+  let cutLeafB = null;
+  let cutFlower = null;
+  let cutFlowerB = null;
+  let causticTile = null;
+  let realistic = false;
+
+  function photoReady(img) {
+    return !!(img && img.complete && img.naturalWidth);
+  }
+
+  function whenPhoto(img, src) {
+    img.onload = function () { if (W) bakeBackground(); };
+    img.src = src;
+  }
+
+  whenPhoto(bedPhoto, "bed.jpg");
+  whenPhoto(bedTex, "pond-bed.jpg");
+  whenPhoto(leafTexA, "lotus-leaf.jpg");
+  whenPhoto(leafTexB, "lotus-leaf-b.jpg");
+  whenPhoto(flowerTex, "lotus-flower.jpg");
+  whenPhoto(flowerTexB, "lotus-bloom.jpg");
+  whenPhoto(autumnLeafTex, "lotus-autumn-leaf.png");
+  seedpodTex.src = "lotus-seedpod.png";
+  budTex.src = "lotus-bud.png";
+
+  function drawCovered(g, img, w, h) {
+    const scale = Math.max(w / img.naturalWidth, h / img.naturalHeight);
+    const dw = img.naturalWidth * scale;
+    const dh = img.naturalHeight * scale;
+    g.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  }
+
+  function cutMagenta(img) {
+    const c = makeCanvas(img.naturalWidth, img.naturalHeight);
+    const g = c.getContext("2d");
+    g.drawImage(img, 0, 0);
+    const im = g.getImageData(0, 0, c.width, c.height);
+    const d = im.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const r = d[i];
+      const gv = d[i + 1];
+      const b = d[i + 2];
+      const hot = r - gv;
+      if (gv < 36 && hot > 120 && r > 150) {
+        d[i + 3] = 0;
+        continue;
+      }
+      if (hot > 70 && b > gv + 25 && gv < 110 && r > 140) {
+        const k = clamp((hot - 70) / 90, 0, 1);
+        d[i + 3] = Math.round(255 * (1 - k));
+        d[i + 2] = Math.round(b * (1 - k) + Math.min(b, gv + 20) * k);
+      }
+    }
+    g.putImageData(im, 0, 0);
+    return c;
+  }
+
+  function floraSprites() {
+    if (!cutLeafA && photoReady(leafTexA)) cutLeafA = cutMagenta(leafTexA);
+    if (!cutLeafB && photoReady(leafTexB)) cutLeafB = cutMagenta(leafTexB);
+    if (!cutFlower && photoReady(flowerTex)) cutFlower = cutMagenta(flowerTex);
+    if (!cutFlowerB && photoReady(flowerTexB)) cutFlowerB = cutMagenta(flowerTexB);
+    return !!(cutLeafA && cutLeafB && cutFlower && cutFlowerB);
+  }
+
+  function hash01(n) {
+    const s = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+    return s - Math.floor(s);
+  }
+
+  function leafDistance(m, mw, mh) {
+    const d = new Float32Array(m.length);
+    for (let i = 0; i < m.length; i++) d[i] = m[i] ? 1e6 : 0;
+    const at = (x, y) => (x < 0 || y < 0 || x >= mw || y >= mh ? 0 : d[y * mw + x]);
+    for (let y = 0; y < mh; y++) {
+      for (let x = 0; x < mw; x++) {
+        const i = y * mw + x;
+        if (d[i]) d[i] = Math.min(d[i], at(x - 1, y) + 1, at(x, y - 1) + 1, at(x - 1, y - 1) + 1.414, at(x + 1, y - 1) + 1.414);
+      }
+    }
+    for (let y = mh - 1; y >= 0; y--) {
+      for (let x = mw - 1; x >= 0; x--) {
+        const i = y * mw + x;
+        if (d[i]) d[i] = Math.min(d[i], at(x + 1, y) + 1, at(x, y + 1) + 1, at(x + 1, y + 1) + 1.414, at(x - 1, y + 1) + 1.414);
+      }
+    }
+    return d;
+  }
+
+  function placeLeaves(m, dist, mw, mh) {
+    const leaves = [];
+    const step = 15;
+    for (let y = 6; y < mh - 6; y += step) {
+      for (let x = 6; x < mw - 6; x += step) {
+        const jx = clamp(Math.round(x + (hash01(x * 3.1 + y) - 0.5) * 11), 0, mw - 1);
+        const jy = clamp(Math.round(y + (hash01(y * 4.3 + x) - 0.5) * 11), 0, mh - 1);
+        const i = jy * mw + jx;
+        if (!m[i] || dist[i] < 2.4) continue;
+        const r = clamp(5 + dist[i] * 0.62, 7, 24);
+        if (leaves.some((k) => Math.hypot(k.x - jx, k.y - jy) < (k.r + r) * 0.74)) continue;
+        leaves.push({ x: jx, y: jy, r: r });
+      }
+    }
+    return leaves;
+  }
+
+  function flowerSpots(pink, mw, mh) {
+    const seen = new Uint8Array(pink.length);
+    const spots = [];
+    const queue = new Int32Array(pink.length);
+    for (let s = 0; s < pink.length; s++) {
+      if (!pink[s] || seen[s]) continue;
+      let head = 0;
+      let tail = 0;
+      queue[tail++] = s;
+      seen[s] = 1;
+      let n = 0;
+      let sx = 0;
+      let sy = 0;
+      while (head < tail) {
+        const i = queue[head++];
+        const x = i % mw;
+        const y = (i / mw) | 0;
+        n++;
+        sx += x;
+        sy += y;
+        const near = [x > 0 ? i - 1 : -1, x < mw - 1 ? i + 1 : -1, i - mw, i + mw];
+        for (let k = 0; k < 4; k++) {
+          const j = near[k];
+          if (j < 0 || j >= pink.length || seen[j] || !pink[j]) continue;
+          seen[j] = 1;
+          queue[tail++] = j;
+        }
+      }
+      if (n > 18) spots.push({ x: sx / n, y: sy / n, n: n });
+    }
+    return spots;
+  }
+
+  function coverFromPaint(source, flowers) {
+    const mw = 640;
+    const mh = Math.max(1, Math.round((mw * H) / W));
+    const small = makeCanvas(mw, mh);
+    const sg = small.getContext("2d");
+    sg.drawImage(source, 0, 0, mw, mh);
+    const px = sg.getImageData(0, 0, mw, mh).data;
+    let m = new Uint8Array(mw * mh);
+    const pink = new Uint8Array(mw * mh);
+    for (let i = 0; i < m.length; i++) if (px[i * 4 + 3] > 32) m[i] = 1;
+    dropSmall(m, mw, 1, 40);
+    const grown = new Uint8Array(m.length);
+    for (let y = 0; y < mh; y++) {
+      for (let x = 0; x < mw; x++) {
+        const i = y * mw + x;
+        grown[i] = m[i] || (x > 0 && m[i - 1]) || (x < mw - 1 && m[i + 1]) || (y > 0 && m[i - mw]) || (y < mh - 1 && m[i + mw]) ? 1 : 0;
+      }
+    }
+    m = grown;
+    const mx = mw / W;
+    const my = mh / H;
+    flowers.forEach((f) => {
+      const cx = Math.round(f.x * mx);
+      const cy = Math.round(f.y * my);
+      const rad = Math.max(3, Math.round(f.size * mx * 0.18));
+      const reach = Math.ceil(rad * 2.1);
+      for (let y = cy - reach; y <= cy + reach; y++) {
+        for (let x = cx - reach; x <= cx + reach; x++) {
+          if (x < 0 || y < 0 || x >= mw || y >= mh) continue;
+          const d2 = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+          if (d2 <= rad * rad) pink[y * mw + x] = 1;
+          if (d2 <= (rad * 2.1) * (rad * 2.1)) m[y * mw + x] = 1;
+        }
+      }
+    });
+    const alpha = sg.createImageData(mw, mh);
+    for (let i = 0; i < m.length; i++) alpha.data[i * 4 + 3] = m[i] ? 255 : 0;
+    sg.putImageData(alpha, 0, 0);
+    seats = findSeats(m, pink, mw, mh);
+    frogs.forEach((fr) => { fr.seat = null; fr.goal = null; fr.jump = null; fr.state = "lost"; });
+    return { m: m, w: mw, h: mh, canvas: small, pink: pink };
+  }
+
+  function paintFlora(layout) {
+    const dist = leafDistance(layout.m, layout.w, layout.h);
+    const pads = placeLeaves(layout.m, dist, layout.w, layout.h);
+    const sx = W / layout.w;
+    const sy = H / layout.h;
+    const flowers = flowerSpots(layout.pink, layout.w, layout.h).map((f) => {
+      const bloom = {
+        x: (f.x + 0.5) * sx,
+        y: (f.y + 0.5) * sy,
+        size: clamp(Math.sqrt(f.n) * ((sx + sy) * 0.5) * 2.15, 64, 220),
+        rot: hash01(f.x * 19 + f.y) * Math.PI * 2,
+      };
+      let best = null;
+      let bestD = 1e9;
+      pads.forEach((c) => {
+        const px = (c.x + 0.5) * sx;
+        const py = (c.y + 0.5) * sy;
+        const d = Math.hypot(px - bloom.x, py - bloom.y);
+        if (d < bestD) { bestD = d; best = { x: px, y: py, span: c.r * sx * 3.1 }; }
+      });
+      if (best) {
+        bloom.size = Math.min(bloom.size, Math.max(56, best.span * 0.74));
+        let ang = hash01(bloom.x * 3.4 + bloom.y) * Math.PI * 2;
+        let near = 1e9;
+        pads.forEach((c) => {
+          const px = (c.x + 0.5) * sx;
+          const py = (c.y + 0.5) * sy;
+          const d = Math.hypot(px - best.x, py - best.y);
+          if (d < 8) return;
+          if (d < near) { near = d; ang = Math.atan2(best.y - py, best.x - px); }
+        });
+        const off = best.span * 0.46;
+        bloom.x = best.x + Math.cos(ang) * off;
+        bloom.y = best.y + Math.sin(ang) * off;
+      }
+      const room = Math.min(bloom.x, bloom.y, W - bloom.x, H - bloom.y);
+      if (room * 1.85 < bloom.size) bloom.size = Math.max(36, room * 1.85);
+      bloom.sprite = cutFlower;
+      return bloom;
+    });
+    surface = makeCanvas(W, H);
+    const g = surface.getContext("2d");
+    soloPads = [];
+    pads.forEach((c) => {
+      const x = (c.x + 0.5) * sx;
+      const y = (c.y + 0.5) * sy;
+      const size = c.r * sx * 3.1 * (0.92 + hash01(c.x * 1.7 + c.y) * 0.16);
+      const sprite = hash01(c.x + c.y * 3.3) > 0.72 ? cutLeafB : cutLeafA;
+      const spin = hash01(c.x * 13.1 + c.y * 7.7) * Math.PI * 2;
+      const tint = sprite === cutLeafB ? "hue-rotate(48deg) saturate(1.45) brightness(0.94)" : "hue-rotate(12deg) saturate(1.3)";
+      g.save();
+      g.translate(x, y);
+      g.rotate(spin);
+      g.filter = tint;
+      g.drawImage(sprite, -size / 2, -size / 2, size, size);
+      g.restore();
+      const leaf = makeCanvas(size, size);
+      const lg = leaf.getContext("2d");
+      lg.translate(size / 2, size / 2);
+      lg.rotate(spin);
+      lg.filter = tint;
+      lg.drawImage(sprite, -size / 2, -size / 2, size, size);
+      let dryLeaf = null;
+      if (photoReady(autumnLeafTex)) {
+        dryLeaf = makeCanvas(size, size);
+        const dg = dryLeaf.getContext("2d");
+        dg.translate(size / 2, size / 2);
+        dg.rotate(spin);
+        dg.drawImage(autumnLeafTex, -size / 2, -size / 2, size, size);
+      }
+      soloPads.push({
+        cx: x,
+        cy: y,
+        radius: size * 0.46,
+        piece: {
+          canvas: leaf,
+          dryCanvas: dryLeaf,
+          ox: x - size / 2,
+          oy: y - size / 2,
+          cx: x,
+          cy: y,
+          k: clamp(Math.sqrt(2800 / (size * size)), 0.55, 1.35),
+          p: hash01(c.x * 9.2 + c.y * 4.4) * Math.PI * 2,
+          dx: 0,
+          dy: 0,
+          rot: 0,
+          lift: 0,
+          bob: 0,
+          seasonRank: hash01(c.x * 5.73 + c.y * 2.91 + 17),
+          dryRank: hash01(c.x * 1.31 + c.y * 8.77 + 39),
+        },
+      });
+    });
+    return flowers;
+  }
+
+  function installSoloLeaves() {
+    leafPieces = soloPads.map((p) => p.piece);
+    leafRest = null;
+    const mw = cover.w;
+    const mh = cover.h;
+    const label = new Int32Array(mw * mh).fill(-1);
+    const sx = W / mw;
+    const sy = H / mh;
+    for (let i = 0; i < cover.m.length; i++) {
+      if (!cover.m[i]) continue;
+      const x = ((i % mw) + 0.5) * sx;
+      const y = (((i / mw) | 0) + 0.5) * sy;
+      let best = -1;
+      let bestD = 1e9;
+      for (let k = 0; k < soloPads.length; k++) {
+        const d = Math.hypot(soloPads[k].cx - x, soloPads[k].cy - y);
+        if (d < soloPads[k].radius && d < bestD) { bestD = d; best = k; }
+      }
+      if (best >= 0) label[i] = best;
+    }
+    leafId = label;
+    seats.forEach((s) => { s.leaf = leafAt(s.x, s.y); });
+  }
+
+  function finishBake() {
+    snowAcc = makeCanvas(W / 2, H / 2);
+    snowDraw = makeCanvas(W / 2, H / 2);
+    snowShade = makeCanvas(W / 2, H / 2);
+    snowField = null;
+  }
 
   function bakeBackground() {
     bg = document.createElement("canvas");
     bg.width = Math.max(1, W);
     bg.height = Math.max(1, H);
     const g = bg.getContext("2d");
-    g.fillStyle = "#8d8474";
+    g.fillStyle = "#2c4638";
     g.fillRect(0, 0, W, H);
-    if (bedPhoto.complete && bedPhoto.naturalWidth) {
-      const scale = Math.max(W / bedPhoto.naturalWidth, H / bedPhoto.naturalHeight);
-      const dw = bedPhoto.naturalWidth * scale;
-      const dh = bedPhoto.naturalHeight * scale;
-      g.drawImage(bedPhoto, (W - dw) / 2, (H - dh) / 2, dw, dh);
-      buildCover();
+    if (photoReady(bedTex) && photoReady(bedPhoto) && floraSprites()) {
+      drawCovered(g, bedTex, W, H);
+      const layoutCanvas = makeCanvas(W, H);
+      drawCovered(layoutCanvas.getContext("2d"), bedPhoto, W, H);
+      const flowers = paintFlora(buildCover(layoutCanvas));
+      cover = coverFromPaint(surface, flowers);
+      buildPondBase();
+      installSoloLeaves();
+      blooms = flowers.map((f) => {
+        f.leaf = leafAt(f.x, f.y);
+        return f;
+      });
+      realistic = true;
+      finishBake();
+      return;
+    }
+    realistic = false;
+    blooms = [];
+    if (photoReady(bedPhoto)) {
+      drawCovered(g, bedPhoto, W, H);
+      cover = buildCover(bg);
       surface = document.createElement("canvas");
       surface.width = bg.width;
       surface.height = bg.height;
@@ -632,10 +1122,7 @@
       sg.drawImage(cover.canvas, 0, 0, bg.width, bg.height);
       buildPondBase();
       buildLeafPieces();
-      snowAcc = makeCanvas(W / 2, H / 2);
-      snowDraw = makeCanvas(W / 2, H / 2);
-      snowShade = makeCanvas(W / 2, H / 2);
-      snowField = null;
+      finishBake();
       return;
     }
     cover = null;
@@ -797,7 +1284,8 @@
     g.restore();
   }
 
-  function makeFish(rand) {
+  function makeFish(rand, species) {
+    species = species || "koi";
     const pattern = PATTERNS[Math.floor(rand() * PATTERNS.length)];
     const palette = {
       kohaku: ["#fbf8f2", "#ee5a24", "#fffaf4"],
@@ -830,12 +1318,14 @@
         ink.push(blob(randRange(rand, -24, 20), randRange(rand, -9, 9), randRange(rand, 1.6, 3.6), randRange(rand, 1.4, 3), rand() * 3));
       }
     }
+    while (reservedCustomNums.has(nextNum)) nextNum++;
     const num = nextNum++;
     const fish = {
       id: "f" + num,
       num,
       name: NAMES[(num - 1) % NAMES.length],
       custom: false,
+      species,
       pattern,
       color: palette[1],
       body: palette[0],
@@ -857,11 +1347,77 @@
       flash: 0,
       boost: 0,
     };
-    buildKoiSprite(fish);
+    if (species !== "koi") {
+      const profile = {
+        goldfish: { body: "#de7132", color: "#ed8f3c", fin: "#f5c79a", size: 0.78, speed: 0.78 },
+        crucian: { body: "#adb4a4", color: "#858e7d", fin: "#bbc6b7", size: 0.92, speed: 0.87 },
+        grasscarp: { body: "#829382", color: "#64776b", fin: "#a9b7a3", size: 1.1, speed: 1.05 },
+        ranchu: { body: "#fff5e7", color: "#e9683f", fin: "#f5d9c5", size: 0.8, speed: 0.75 },
+        guppy: { body: "#62aac1", color: "#2b9fbb", fin: "#94d2cf", size: 0.7, speed: 0.88 },
+        betta: { body: "#416ea4", color: "#b94662", fin: "#b86691", size: 0.82, speed: 0.72 },
+      }[species];
+      if (profile) {
+        fish.body = profile.body; fish.color = profile.color; fish.fin = profile.fin;
+        fish.spots = []; fish.ink = []; fish.pattern = "white";
+        fish.scale *= profile.size; fish.baseSpeed *= profile.speed;
+        fish.artVariant = Math.floor(rand() * 3);
+      }
+    }
+    applyFishSprite(fish);
     return fish;
   }
 
   const KOI = { x0: -78, x1: 48, hh: 28, res: 3 };
+  const speciesArt = {};
+
+  function applyFishSprite(fish) {
+    const art = speciesArt[fish.species];
+    if (!fish.custom && art && art.variants) {
+      const variant = art.variants[fish.artVariant % art.variants.length];
+      fish.sprite = variant.sprite;
+      fish.shadow = variant.shadow;
+      fish.thumb = null;
+    } else {
+      buildKoiSprite(fish);
+    }
+  }
+
+  function prepareSpeciesArt(art) {
+    // The final swimming sprite is under 400 px wide. Downsample the source
+    // before scanning its alpha so adding fish types does not stall startup.
+    const sampleScale = Math.min(1, 640 / Math.max(art.img.naturalWidth, art.img.naturalHeight));
+    const source = makeCanvas(art.img.naturalWidth * sampleScale, art.img.naturalHeight * sampleScale);
+    const sg = source.getContext("2d", { willReadFrequently: true });
+    sg.drawImage(art.img, 0, 0, source.width, source.height);
+    const pixels = sg.getImageData(0, 0, source.width, source.height).data;
+    let x0 = source.width, y0 = source.height, x1 = -1, y1 = -1;
+    for (let y = 0; y < source.height; y++) for (let x = 0; x < source.width; x++) {
+      if (pixels[(y * source.width + x) * 4 + 3] < 20) continue;
+      if (x < x0) x0 = x; if (x > x1) x1 = x;
+      if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+    if (x1 < x0 || y1 < y0) return;
+    const sw = x1 - x0 + 1, sh = y1 - y0 + 1;
+    const filters = ["none", "brightness(0.92) saturate(0.92)", "brightness(1.08) saturate(1.08)"];
+    art.variants = filters.map((filter) => {
+      const c = makeCanvas((KOI.x1 - KOI.x0) * KOI.res, KOI.hh * 2 * KOI.res);
+      const g = c.getContext("2d");
+      const k = Math.min((c.width - 12) / sw, (c.height - 12) / sh);
+      const dw = sw * k, dh = sh * k;
+      g.filter = filter;
+      g.drawImage(source, x0, y0, sw, sh, (c.width - dw) / 2, (c.height - dh) / 2, dw, dh);
+      g.filter = "none";
+      return { sprite: c, shadow: makeShadow(c) };
+    });
+    fishes.forEach((fish) => { if (!fish.custom && fish.species === art.id) applyFishSprite(fish); });
+  }
+
+  PondFish.species.filter((item) => item.image).forEach((item) => {
+    const art = { id: item.id, img: new Image(), variants: null };
+    speciesArt[item.id] = art;
+    art.img.onload = () => prepareSpeciesArt(art);
+    art.img.src = item.image;
+  });
 
   function rgba(hex, a) {
     const n = parseInt(String(hex).replace("#", ""), 16);
@@ -1122,7 +1678,7 @@
     [-1, 1].forEach((side) => {
       g.save();
       g.translate(24, side * 9.5);
-      g.rotate(side * (Math.PI - 0.8 + flap * side));
+      g.rotate(side * (Math.PI - 0.8 + flap));
       const fg = g.createLinearGradient(0, 0, 17, 0);
       fg.addColorStop(0, rgba(f.fin, 0.85));
       fg.addColorStop(1, rgba(f.fin, 0.22));
@@ -1179,31 +1735,69 @@
     return s;
   }
 
-  function warpDraw(img, f, t) {
-    const iw = img.naturalWidth || img.width;
-    const ih = img.naturalHeight || img.height;
-    const BW = KOI.x1 - KOI.x0;
-    const BH = (BW * ih) / iw;
-    const N = 16;
-    const sw = BW / N;
-    const ov = 0.3;
-    const amp = f.boost > 0 ? 5.2 : 3.6;
-    const ph = t * (5 + f.wag * 1.6) * (f.boost > 0 ? 1.5 : 1) + f.phase;
-    const bend = (x) => {
-      const u = clamp((30 - x) / (30 - KOI.x0), 0, 1);
-      return amp * u * u * Math.sin(ph - u * 3.4);
-    };
-    for (let i = 0; i < N; i++) {
-      const a = Math.max(KOI.x0, KOI.x0 + i * sw - ov);
-      const b = Math.min(KOI.x1, KOI.x0 + (i + 1) * sw + ov);
-      const xc = KOI.x0 + (i + 0.5) * sw;
-      const slope = bend(xc + 0.5) - bend(xc - 0.5);
-      ctx.save();
-      ctx.translate(xc, bend(xc));
-      ctx.rotate(Math.atan(slope));
-      ctx.drawImage(img, ((a - KOI.x0) / BW) * iw, 0, ((b - a) / BW) * iw, ih, a - xc, -BH / 2, b - a, BH);
-      ctx.restore();
-    }
+  function fishMotion(f) {
+    if (!f.motion) f.motion = PondFishMotion.create(f.baseSpeed || 55, f.phase);
+    return f.motion;
+  }
+
+  function warpDraw(img, f) {
+    PondFishMotion.draw(ctx, img, fishMotion(f), f.species, KOI);
+  }
+
+  const fishCountsKey = "bitan.fish-counts.v1";
+
+  function readFishCounts() {
+    try {
+      const raw = localStorage.getItem(fishCountsKey);
+      if (raw) {
+        return PondFish.restore(JSON.parse(raw));
+      }
+    } catch (err) { /* Use defaults if storage is unavailable or corrupt. */ }
+    return PondFish.defaults();
+  }
+
+  function reservedCustomFishNumbers() {
+    try {
+      const saved = JSON.parse(localStorage.getItem("bitan.customs") || "[]");
+      if (Array.isArray(saved)) return new Set(saved.map((item) => Number(item.num)).filter((num) => Number.isSafeInteger(num) && num > 0));
+    } catch (err) { /* Ignore invalid saved data. */ }
+    return new Set();
+  }
+
+  function addOrdinaryFish(species, rand) {
+    const fish = makeFish(rand, species);
+    const p = placeInWater(rand);
+    fish.x = p.x; fish.y = p.y;
+    fishes.push(fish);
+  }
+
+  function setFishCounts(input) {
+    const result = PondFish.validate(input);
+    if (!result.ok) return result;
+    try { localStorage.setItem(fishCountsKey, JSON.stringify(result.counts)); }
+    catch (err) { return { ok: false, error: "无法保存设置，请检查本地存储权限" }; }
+    const plan = PondFish.plan(fishes, result.counts);
+    plan.remove.forEach((fish) => {
+      const index = fishes.indexOf(fish);
+      if (index >= 0) fishes.splice(index, 1);
+      if (hoverFish === fish) { hoverFish = null; paintTip(); }
+    });
+    PondFish.species.forEach((item) => {
+      for (let i = 0; i < plan.add[item.id]; i++) addOrdinaryFish(item.id, Math.random);
+    });
+    configuredFishCounts = result.counts;
+    if (onRoster) onRoster();
+    return result;
+  }
+
+  function fishThumbnail(id) {
+    const fish = fishes.find((item) => !item.custom && (item.species || "koi") === id && item.sprite);
+    if (fish) return fish.sprite.toDataURL("image/png");
+    if (id !== "koi") return (PondFish.species.find((item) => item.id === id) || {}).image || "";
+    const preview = { pattern: "kohaku", body: "#fbf8f2", color: "#ee5a24", fin: "#fffaf4", ink: [],
+      spots: [{ x: 30, y: 0, rx: 12, ry: 10, rot: 0, seed: 1 }, { x: -7, y: 0, rx: 12, ry: 9, rot: 0, seed: 2 }] };
+    buildKoiSprite(preview, null, true);
+    return preview.sprite.toDataURL("image/png");
   }
 
   function spawn() {
@@ -1211,14 +1805,13 @@
     fishes.length = 0;
     turtles.length = 0;
     butterflies.length = 0;
+    dragonflies.length = 0;
     nextNum = 1;
-    for (let i = 0; i < 36; i++) {
-      const f = makeFish(rand);
-      const p = placeInWater(rand);
-      f.x = p.x;
-      f.y = p.y;
-      fishes.push(f);
-    }
+    reservedCustomNums = reservedCustomFishNumbers();
+    configuredFishCounts = readFishCounts();
+    PondFish.species.forEach((item) => {
+      for (let i = 0; i < configuredFishCounts[item.id]; i++) addOrdinaryFish(item.id, rand);
+    });
     const kinds = ["turtleSoftshell", "turtleBox", "turtleSpotted", "turtleMutica", Math.random() < 0.5 ? "turtle" : "turtleReeves"];
     for (let i = kinds.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -1251,6 +1844,10 @@
         flap: randRange(rand, 8, 13),
         kind: wingKinds[i],
       });
+    }
+    for (let i = 0; i < 3; i++) {
+      dragonflies.push({ x: rand() * W, y: H * (0.2 + rand() * 0.6), a: rand() * Math.PI * 2,
+        speed: 18 + rand() * 16, phase: rand() * Math.PI * 2 });
     }
     motes = Array.from({ length: 18 }, () => ({
       x: Math.random() * W,
@@ -1349,7 +1946,10 @@
   }
 
   function weatherMul() {
-    return { clear: 1, wind: 1.08, rain: 0.84, drizzle: 0.9, snow: 0.7, fog: 0.82 }[state.effect] || 1;
+    const weather = { clear: 1, wind: 1.08, rain: 0.84, drizzle: 0.9, snow: 0.7, fog: 0.82 }[state.effect] || 1;
+    const winter = seasonWeights ? seasonWeights.winter : 0;
+    const cold = Number.isFinite(state.temperature) && state.temperature < 5 ? 0.92 : 1;
+    return weather * (1 - winter * 0.16) * cold;
   }
 
   function windPush() {
@@ -1361,6 +1961,7 @@
   }
 
   function steerFish(f, dt) {
+    const movement = fishMotion(f);
     let tx = Math.cos(f.a);
     let ty = Math.sin(f.a);
     f.wander += (Math.random() - 0.5) * 0.8;
@@ -1450,13 +2051,13 @@
     let diff = desired - f.a;
     while (diff > Math.PI) diff -= Math.PI * 2;
     while (diff < -Math.PI) diff += Math.PI * 2;
-    const maxTurn = 2.4 * dt;
-    f.a += clamp(diff, -maxTurn, maxTurn);
-    const speed = (f.baseSpeed + (f.boost > 0 ? 46 : 0)) * weatherMul();
-    const step = speed * dt;
+    f.a += PondFishMotion.turn(movement, diff, dt);
+    PondFishMotion.advance(movement, f.baseSpeed, weatherMul(), f.boost > 0, dt, f.species);
+    // A subtle thrust-and-glide pulse follows each tail beat.
+    const step = movement.speed * (0.96 + 0.04 * Math.cos(movement.phase * 2)) * dt;
     const nx = f.x + Math.cos(f.a) * step + windPush() * dt * 0.35;
     const ny = f.y + Math.sin(f.a) * step;
-    moveInWater(f, nx, ny);
+    moveInWater(f, nx, ny, dt);
     if (inWater(f.x, f.y)) {
       f.wake = (f.wake || 0) + step;
       if (f.wake > 18) {
@@ -1564,6 +2165,15 @@
       if (b.y < H * 0.06) b.y = H * 0.06;
       if (b.y > H * 0.9) b.y = H * 0.9;
     });
+    dragonflies.forEach((d) => {
+      d.a += Math.sin(t * 0.38 + d.phase) * 0.55 * dt;
+      d.x += (Math.cos(d.a) * d.speed + windPush() * 0.2) * dt;
+      d.y += Math.sin(d.a) * d.speed * 0.45 * dt;
+      if (d.x < -30) d.x = W + 20;
+      if (d.x > W + 30) d.x = -20;
+      if (d.y < H * 0.08) { d.y = H * 0.08; d.a = Math.abs(d.a); }
+      if (d.y > H * 0.92) { d.y = H * 0.92; d.a = -Math.abs(d.a); }
+    });
   }
 
   function respawnDrop(d, first) {
@@ -1596,7 +2206,10 @@
     } else if (onLeaf) {
       if (Math.random() < 0.55) addRainBits(x, y, 2 + ((Math.random() * 4) | 0), 1);
       const li = leafAt(x, y);
-      if (li >= 0 && leafPieces[li]) leafPieces[li].bob = Math.min(1, leafPieces[li].bob + 0.25 * z);
+      if (li >= 0 && leafPieces[li]) {
+        const kick = (state.effect === "rain" ? 0.28 : 0.12) * z;
+        leafPieces[li].bob = Math.min(1, leafPieces[li].bob + kick);
+      }
     }
   }
 
@@ -1621,7 +2234,7 @@
     const y = d.land;
     if (x < 0 || y < 0 || x > W || y > H) return;
     if (coverAt(x, y)) {
-      snowBlob(x, y, 1.2 + d.r * 0.9, 0.35);
+      if (!leafPieces.length) snowBlob(x, y, 1.2 + d.r * 0.9, 0.35);
     } else if (inWater(x, y) && rings.length < 520) {
       rings.push({ x: x, y: y, r: 0.3, max: 1.5 + d.z * 2.5, a: 0.12, w: 0.5, wait: 0 });
     }
@@ -1702,6 +2315,12 @@
   function updateSnowCover(dt) {
     if (!snowAcc || !cover) return;
     const snowing = state.effect === "snow";
+    // Individual seasonal leaves draw their own snow. Avoid computing the old
+    // full-size summer mask every frame when it is not used for rendering.
+    if (leafPieces.length) {
+      snowLevel = clamp(snowLevel + (snowing ? dt / 45 : -dt / 24), 0, 1);
+      return;
+    }
     if (snowing && snowLevel < 1) snowLevel = Math.min(1, snowLevel + dt / 45);
     snowTick -= dt;
     if (snowTick > 0) return;
@@ -1842,6 +2461,21 @@
       d.r += dt * (2 + d.s * 2);
       if (d.x > W + 14) { d.x = -14; d.y = Math.random() * H; }
     });
+    const autumn = seasonWeights ? seasonWeights.autumn : 0;
+    autumnLeafTimer -= dt * autumn;
+    if (autumn > 0.18 && autumnLeafTimer <= 0 && autumnLeaves.length < 7) {
+      const x = W * (0.12 + Math.random() * 0.76), y = H * (0.12 + Math.random() * 0.76);
+      autumnLeaves.push({ x, y, age: 0, fall: 1.8 + Math.random(), life: 10 + Math.random() * 5,
+        size: 4 + Math.random() * 3, angle: Math.random() * 6.28, phase: Math.random() * 6.28 });
+      autumnLeafTimer = 3.5 + Math.random() * 5;
+    }
+    autumnLeaves.forEach((leaf) => {
+      leaf.age += dt;
+      leaf.x += (leaf.age < leaf.fall ? 7 : 2.5 + windPush() * 0.12) * dt;
+      leaf.y += (leaf.age < leaf.fall ? 5 : 0.5) * dt;
+      leaf.angle += dt * (leaf.age < leaf.fall ? 1.2 : 0.15);
+    });
+    autumnLeaves = autumnLeaves.filter((leaf) => leaf.age < leaf.life && leaf.x < W + 20 && leaf.y < H + 20);
     motes.forEach((m) => {
       m.y -= 8 * dt;
       m.x += Math.sin(t + m.p) * 6 * dt;
@@ -1908,8 +2542,9 @@
   function paintKoiLocal(f, t) {
     ctx.scale(f.scale * VIEW, f.scale * VIEW);
     if (!f.sprite) return;
-    drawPectorals(ctx, f, Math.sin(t * 2.6 + f.phase * 1.3) * 0.3);
-    warpDraw(f.sprite, f, t);
+    const movement = fishMotion(f);
+    if (!f.species || f.species === "koi") drawPectorals(ctx, f, Math.sin(movement.finPhase) * 0.26);
+    warpDraw(f.sprite, f);
     if (f.flash > 0) {
       ctx.strokeStyle = "rgba(255,255,255," + f.flash.toFixed(3) + ")";
       ctx.lineWidth = 2;
@@ -1922,7 +2557,8 @@
   function drawFloorShadow(f) {
     if (f.kind === "turtle") {
       const art = critterArt[f.art] || critterArt.turtle;
-      drawCritterShadow(art, f.x + 16 * VIEW, f.y + 24 * VIEW, f.a, (VIEW * TURTLE_LEN * f.scale) / art.meta.unit, 0.32);
+      const winter = seasonWeights ? seasonWeights.winter : 0;
+      drawCritterShadow(art, f.x + 16 * VIEW, f.y + 24 * VIEW, f.a, (VIEW * TURTLE_LEN * f.scale) / art.meta.unit, 0.32 * (1 - winter * 0.65));
       return;
     }
     ctx.save();
@@ -1976,6 +2612,7 @@
     const u = VIEW * TURTLE_LEN * tur.scale / m.unit;
     const phi = tur.stroke || 0;
     ctx.save();
+    ctx.globalAlpha = 1 - (seasonWeights ? seasonWeights.winter * 0.65 : 0);
     ctx.translate(tur.x, tur.y);
     ctx.rotate(tur.a + Math.sin(t * 1.2 + tur.phase) * 0.03 + Math.sin(phi) * 0.035);
     ctx.scale(u * (art.sx || 1), u * (art.sy || 1));
@@ -2275,7 +2912,10 @@
   function drawButterfly(b, t) {
     const cycle = t * b.flap + b.phase;
     const spread = 0.18 + 0.82 * Math.pow(Math.abs(Math.sin(cycle)), 0.62);
-    const dim = state.effect === "snow" ? 0.35 : state.effect === "rain" ? 0.7 : 1;
+    const w = seasonWeights || { spring: 0, summer: 1, autumn: 0, winter: 0 };
+    const dim = (state.effect === "snow" ? 0.05 : state.effect === "rain" ? 0.45 : 1) *
+      (w.spring * 0.9 + w.summer + w.autumn * 0.35 + w.winter * 0.02);
+    if (dim < 0.01) return;
     const kind = b.kind || "white";
     ctx.save();
     ctx.translate(b.x, b.y);
@@ -2325,6 +2965,7 @@
   function frogSize() { return VIEW * 14; }
 
   function seatBlocked(s) {
+    if (!coverAt(s.x, s.y)) return true;
     const els = document.querySelectorAll(".journal, .brand");
     for (let i = 0; i < els.length; i++) {
       const r = els[i].getBoundingClientRect();
@@ -2443,10 +3084,12 @@
       p.vz -= 320 * dt;
     });
     splashes = splashes.filter((p) => p.z > 0);
+    if (seasonWeights && seasonWeights.winter > 0.8) return;
     if (!frogs.length && seats.length) spawnFrogs();
     const mouseHot = mouse.inside && now - mouse.movedAt < 320;
     frogs.forEach((fr) => {
       if (fr.state === "lost") { placeLostFrog(fr); return; }
+      if (fr.state === "sit" && !coverAt(fr.x, fr.y)) { takeSeat(fr, null); fr.state = "lost"; return; }
       fr.croak = Math.max(0, fr.croak - dt);
       fr.land = Math.max(0, fr.land - dt);
       if (fr.state === "sit") {
@@ -2533,10 +3176,12 @@
   }
 
   function frogHit(x, y) {
+    if (seasonWeights && seasonWeights.winter > 0.8) return null;
     let best = null;
     let bestD = Math.max(14, 3 * frogSize());
     frogs.forEach((fr) => {
       if (fr.state !== "sit" && fr.state !== "swim") return;
+      if (fr.state === "sit" && !coverAt(fr.x, fr.y)) return;
       const d = Math.hypot(fr.x - x, fr.y - y);
       if (d < bestD) { bestD = d; best = fr; }
     });
@@ -2545,6 +3190,8 @@
 
   function drawFrog(fr, t, under) {
     if (under !== (fr.state === "swim")) return;
+    if (seasonWeights && seasonWeights.winter > 0.8) return;
+    if (fr.state === "sit" && !coverAt(fr.x, fr.y)) return;
     const sit = critterArt.frogSit;
     const leap = critterArt.frogLeap;
     if (!sit.ready || !leap.ready) return;
@@ -2823,17 +3470,114 @@
       + Math.sin(y * 0.008 + t * 0.3) * 1.05;
   }
 
-  function drawLivingWater(t) {
-    const src = pondBase || bg;
-    if (!src) return;
+  function ensureCaustics() {
+    if (causticTile) return causticTile;
+    const s = 360;
+    const c = makeCanvas(s, s);
+    const g = c.getContext("2d");
+    g.fillStyle = "#000";
+    g.fillRect(0, 0, s, s);
+    g.lineCap = "round";
+    g.lineWidth = 1.35;
+    g.strokeStyle = "rgba(232, 255, 248, 0.9)";
+    for (let i = 0; i < 52; i++) {
+      const x = hash01(i * 5.1) * s;
+      const y = hash01(i * 9.3 + 2) * s;
+      g.globalAlpha = 0.4 + hash01(i * 2.2) * 0.6;
+      g.beginPath();
+      g.moveTo(x, y);
+      g.bezierCurveTo(x + 46, y - 34, x + 88, y + 22, x + 24, y + 68);
+      g.stroke();
+    }
+    const soft = makeCanvas(s, s);
+    const sg = soft.getContext("2d");
+    sg.filter = "blur(1.3px)";
+    sg.drawImage(c, 0, 0);
+    causticTile = soft;
+    return causticTile;
+  }
+
+  function drawWaterSkin(t) {
+    if (!realistic) return;
+    const light = skyLight();
+    const day = clamp(1 - light.night * 0.82, 0.1, 1);
+    const clear = state.effect === "clear" || state.effect === "wind" ? 1 : 0.4;
     ctx.save();
-    const band = 4;
+    const wash = ctx.createLinearGradient(0, 0, 0, H);
+    wash.addColorStop(0, "rgb(30, 196, 204)");
+    wash.addColorStop(0.45, "rgb(0, 148, 176)");
+    wash.addColorStop(1, "rgb(0, 86, 138)");
+    ctx.globalCompositeOperation = "overlay";
+    ctx.globalAlpha = 0.68;
+    ctx.fillStyle = wash;
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = "source-over";
+    const tile = ensureCaustics();
+    const s = tile.width;
+    ctx.globalCompositeOperation = "screen";
+    const ox = (t * 18) % s;
+    const oy = (t * 11) % s;
+    ctx.globalAlpha = 0.07 * day * clear;
+    for (let y = -s; y < H + s; y += s) {
+      for (let x = -s; x < W + s; x += s) ctx.drawImage(tile, x + ox, y + oy);
+    }
+    const ox2 = ((-t * 14) % s + s) % s;
+    const oy2 = ((t * 8) % s + s) % s;
+    ctx.globalAlpha = 0.04 * day * clear;
+    for (let y = -s; y < H + s; y += s) {
+      for (let x = -s; x < W + s; x += s) ctx.drawImage(tile, x + ox2, y + oy2);
+    }
+    ctx.restore();
+  }
+
+  function drawLivingWater(t) {
+    // The realistic pond background is already open water. Using the old
+    // inpainted cover here leaves blurry summer-leaf silhouettes in winter.
+    const src = realistic ? bg : (pondBase || bg);
+    if (!src) return;
+    if (realistic) {
+      ctx.save();
+      ctx.filter = "hue-rotate(58deg) saturate(1.75) brightness(1.02)";
+      ctx.drawImage(src, 0, 0, W, H);
+      ctx.restore();
+      drawWaterSkin(t);
+      return;
+    }
+    ctx.save();
+    const band = 3;
     for (let y = 0; y < H; y += band) {
       const shift = waveAt(y, t);
-      const sy = Math.max(0, Math.min(H - band, y));
+      const bob = Math.sin(y * 0.012 + t * 0.8) * 1.4;
+      const sy = Math.max(0, Math.min(H - band, y + bob));
       ctx.drawImage(src, 0, sy, W, band, shift - 6, y, W + 12, band);
     }
     ctx.restore();
+    drawWaterSkin(t);
+  }
+
+  function drawBlooms() {
+    blooms.forEach((f) => {
+      if (!f.sprite) return;
+      const at = leafMove(f.leaf, f.x, f.y);
+      ctx.save();
+      ctx.translate(at.x, at.y);
+      ctx.rotate(f.rot + (at.rot || 0));
+      ctx.drawImage(f.sprite, -f.size / 2, -f.size / 2, f.size, f.size);
+      ctx.restore();
+    });
+  }
+
+  function drawSurface() {
+    if (!surface) return;
+    if (realistic) {
+      ctx.save();
+      ctx.filter = "blur(9px) brightness(0)";
+      ctx.globalAlpha = 0.3;
+      ctx.drawImage(surface, 6, 10, W, H);
+      ctx.restore();
+    }
+    ctx.drawImage(surface, 0, 0, W, H);
   }
 
   function drawCrestGlitter(t, x0, rgb) {
@@ -2858,10 +3602,45 @@
     }
   }
 
+  function drawClearSun(t, light, x, warm) {
+    ctx.save();
+    const veil = ctx.createLinearGradient(x - W * 0.18, 0, x + W * 0.18, 0);
+    const glow = (0.035 + light.alt * 0.05).toFixed(3);
+    veil.addColorStop(0, "rgba(" + warm.join(",") + ",0)");
+    veil.addColorStop(0.5, "rgba(" + warm.join(",") + "," + glow + ")");
+    veil.addColorStop(1, "rgba(" + warm.join(",") + ",0)");
+    ctx.fillStyle = veil;
+    ctx.fillRect(x - W * 0.18, H * 0.1, W * 0.36, H * 0.8);
+    const n = 16;
+    for (let i = 0; i < n; i++) {
+      const along = 0.14 + ((i + 0.5) / n) * 0.72;
+      const y = H * along + Math.sin(t * 0.85 + i * 2.2) * 7;
+      const spread = 8 + along * 22;
+      const gx = x + Math.sin(t * 1.35 + i * 1.4) * spread * 0.45 + Math.sin(i * 2.6) * spread * 0.35;
+      if (!inWater(gx, y) || coverAt(gx, y)) continue;
+      const tw = 4 + (i % 4) * 1.6;
+      const th = 2.4 + (i % 3) * 0.45;
+      const flick = 0.3 + 0.7 * Math.pow(Math.max(0, Math.sin(t * 2.1 + i * 1.9)), 2);
+      const alpha = (0.06 + light.alt * 0.2) * flick;
+      const g = ctx.createRadialGradient(gx, y, 0, gx, y, tw * 1.6);
+      g.addColorStop(0, "rgba(" + warm.join(",") + "," + alpha.toFixed(3) + ")");
+      g.addColorStop(1, "rgba(" + warm.join(",") + ",0)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.ellipse(gx, y, tw, th, Math.sin(i * 1.7) * 0.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
   function drawSunOnWater(t, light) {
     const p = light.p;
     const x = W * (0.08 + p * 0.84);
     const warm = p < 0.22 ? [255, 176, 92] : p > 0.78 ? [255, 112, 58] : [255, 236, 196];
+    if (realistic) {
+      drawClearSun(t, light, x, warm);
+      return;
+    }
     const alpha = (0.1 + light.alt * 0.16) * (state.effect === "wind" ? 0.65 : 1);
     ctx.save();
     const veil = ctx.createLinearGradient(0, 0, W, 0);
@@ -3109,30 +3888,145 @@
     if (state.effect === "clear" && !light.day) drawMoonOnWater(t, light);
   }
 
+  function drawSeasonWater() {
+    const w = seasonWeights;
+    if (!w) return;
+    ctx.save();
+    if (w.autumn > 0.01) { ctx.fillStyle = "rgba(115,99,50," + (w.autumn * 0.055).toFixed(3) + ")"; ctx.fillRect(0, 0, W, H); }
+    if (w.winter > 0.01) { ctx.fillStyle = "rgba(76,119,142," + (w.winter * 0.16).toFixed(3) + ")"; ctx.fillRect(0, 0, W, H); }
+    if (w.spring > 0.01) { ctx.fillStyle = "rgba(168,211,155," + (w.spring * 0.035).toFixed(3) + ")"; ctx.fillRect(0, 0, W, H); }
+    const freezing = state.effect === "snow" || (Number.isFinite(state.temperature) && state.temperature <= 0);
+    if (freezing && w.winter > 0.01) {
+      const width = Math.max(35, Math.min(W, H) * 0.11);
+      const left = ctx.createLinearGradient(0, 0, width, 0);
+      left.addColorStop(0, "rgba(220,239,241," + (0.23 * w.winter).toFixed(3) + ")");
+      left.addColorStop(1, "rgba(220,239,241,0)");
+      ctx.fillStyle = left; ctx.fillRect(0, 0, width, H);
+      const right = ctx.createLinearGradient(W, 0, W - width, 0);
+      right.addColorStop(0, "rgba(220,239,241," + (0.23 * w.winter).toFixed(3) + ")");
+      right.addColorStop(1, "rgba(220,239,241,0)");
+      ctx.fillStyle = right; ctx.fillRect(W - width, 0, width, H);
+    }
+    ctx.restore();
+  }
+
+  function drawTadpoles(t) {
+    const alpha = seasonWeights ? seasonWeights.spring * 0.7 : 0;
+    if (alpha < 0.02) return;
+    ctx.save(); ctx.globalAlpha = alpha;
+    for (let i = 0; i < 16; i++) {
+      const phase = i * 3.17;
+      const x = W * (0.18 + hash01(i * 7.9) * 0.64) + Math.sin(t * 0.24 + phase) * 18;
+      const y = H * (0.2 + hash01(i * 13.3 + 4) * 0.6) + Math.cos(t * 0.2 + phase) * 12;
+      if (!inWater(x, y) || coverAt(x, y)) continue;
+      ctx.save(); ctx.translate(x, y); ctx.rotate(Math.sin(t * 0.24 + phase) * 1.2);
+      ctx.strokeStyle = "rgba(37,67,48,0.6)"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(-3, Math.sin(t * 5 + phase) * 2, -6, 0); ctx.stroke();
+      ctx.fillStyle = "rgba(30,65,47,0.72)"; ctx.beginPath(); ctx.ellipse(1, 0, 2.4, 1.6, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  function drawReeds(t) {
+    const w = seasonWeights;
+    if (!w) return;
+    const opacity = w.spring * 0.13 + w.autumn * 0.52 + w.winter * 0.68;
+    if (opacity < 0.02) return;
+    const patches = [[0.035, 0.24, -0.65], [0.045, 0.79, -1.0], [0.965, 0.74, 0.7]];
+    const scale = clamp(Math.min(W, H) / 720, 0.65, 1.3);
+    patches.forEach(([u, v, angle], n) => {
+      ctx.save(); ctx.translate(W * u, H * v); ctx.rotate(angle + Math.sin(t * 0.7 + n) * (0.025 + leafS * 0.09));
+      ctx.globalAlpha = opacity; ctx.lineCap = "round";
+      for (let i = 0; i < 9; i++) {
+        const spread = (i - 4) * 4 * scale, height = (26 + hash01(i * 3 + n) * 40) * scale;
+        ctx.strokeStyle = i % 3 ? "#88724d" : "#b7a17a"; ctx.lineWidth = (0.8 + (i % 2) * 0.6) * scale;
+        ctx.beginPath(); ctx.moveTo(spread * 0.3, 5 * scale);
+        ctx.quadraticCurveTo(spread * 1.1, -height * 0.48, spread * 1.8, -height); ctx.stroke();
+        if (snowLevel > 0.02 && w.winter > 0.05) {
+          ctx.save(); ctx.globalAlpha = opacity * Math.min(0.8, snowLevel * 1.2);
+          ctx.strokeStyle = "#e5efec"; ctx.lineWidth = 1.2 * scale;
+          ctx.beginPath(); ctx.moveTo(spread * 1.1, -height * 0.5);
+          ctx.quadraticCurveTo(spread * 1.5, -height * 0.75, spread * 1.8, -height); ctx.stroke();
+          ctx.restore();
+        }
+        if (i % 3 === 0) {
+          ctx.fillStyle = "#776447"; ctx.beginPath();
+          ctx.ellipse(spread * 1.8, -height, 1.5 * scale, 5 * scale, -0.22, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+      ctx.restore();
+    });
+  }
+
+  function drawAutumnLeaves(t) {
+    const amount = seasonWeights ? seasonWeights.autumn : 0;
+    if (amount < 0.01) return;
+    autumnLeaves.forEach((leaf) => {
+      const falling = leaf.age < leaf.fall;
+      if (!falling && coverAt(leaf.x, leaf.y)) return;
+      const fade = Math.min(1, leaf.age * 2, (leaf.life - leaf.age) / 2);
+      const rise = falling ? (leaf.fall - leaf.age) * 8 : 0;
+      ctx.save(); ctx.globalAlpha = amount * fade * 0.8; ctx.translate(leaf.x, leaf.y - rise);
+      ctx.rotate(leaf.angle); ctx.scale(1, falling ? 0.4 + 0.6 * Math.abs(Math.sin(t * 3 + leaf.phase)) : 0.75);
+      ctx.fillStyle = "#b07d40"; ctx.beginPath(); ctx.moveTo(-leaf.size, 0);
+      ctx.quadraticCurveTo(0, -leaf.size * 0.7, leaf.size, 0);
+      ctx.quadraticCurveTo(0, leaf.size * 0.7, -leaf.size, 0); ctx.fill();
+      ctx.strokeStyle = "rgba(83,57,31,0.55)"; ctx.lineWidth = 0.6;
+      ctx.beginPath(); ctx.moveTo(-leaf.size, 0); ctx.lineTo(leaf.size, 0); ctx.stroke(); ctx.restore();
+    });
+  }
+
+  function drawDragonflies(t) {
+    const w = seasonWeights;
+    if (!w || state.effect === "snow") return;
+    const weather = state.effect === "rain" ? 0.12 : state.effect === "wind" ? 0.35 : 1;
+    const daylight = state.hour >= 6 && state.hour < 19 ? 1 : 0.05;
+    const alpha = (w.spring * 0.25 + w.summer * 0.9 + w.autumn * 0.2) * weather * daylight;
+    if (alpha < 0.02) return;
+    dragonflies.forEach((d) => {
+      ctx.save(); ctx.translate(d.x, d.y); ctx.rotate(d.a + Math.PI / 2); ctx.globalAlpha = alpha;
+      const flap = 0.65 + 0.35 * Math.abs(Math.sin(t * 17 + d.phase));
+      ctx.fillStyle = "rgba(215,235,225,0.6)";
+      [-1, 1].forEach((side) => {
+        ctx.beginPath(); ctx.ellipse(side * 5, -2, 5.6 * flap, 1.5, side * -0.45, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(side * 5, 1, 5.3 * flap, 1.4, side * 0.32, 0, Math.PI * 2); ctx.fill();
+      });
+      ctx.strokeStyle = "#3f5f45"; ctx.lineWidth = 1.5; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(0, -4); ctx.lineTo(0, 7); ctx.stroke();
+      ctx.fillStyle = "#bd9b5b"; ctx.beginPath(); ctx.arc(0, -4, 1.3, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    });
+  }
+
   function drawScene(t, dt) {
     ctx.clearRect(0, 0, W, H);
     const moving = leafS > 0.01 && pondBase && leafPieces.length;
     if (bg) {
-      ctx.drawImage(moving ? pondBase : bg, 0, 0, W, H);
+      ctx.drawImage(!realistic && moving ? pondBase : bg, 0, 0, W, H);
       drawLivingWater(t);
+      drawSeasonWater();
     }
 
-    ctx.save();
-    ctx.globalCompositeOperation = "screen";
-    for (let i = 0; i < 18; i++) {
-      const x = (Math.sin(t * 0.35 + i * 1.7) * 0.5 + 0.5) * W;
-      const y = (Math.cos(t * 0.28 + i * 2.2) * 0.5 + 0.5) * H;
-      const r = 50 + (i % 5) * 18;
-      const glow = ctx.createRadialGradient(x, y, 0, x, y, r);
-      glow.addColorStop(0, "rgba(210, 255, 230, 0.08)");
-      glow.addColorStop(1, "rgba(180, 230, 200, 0)");
-      ctx.fillStyle = glow;
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fill();
+    if (!realistic) {
+      ctx.save();
+      ctx.globalCompositeOperation = "screen";
+      for (let i = 0; i < 18; i++) {
+        const x = (Math.sin(t * 0.35 + i * 1.7) * 0.5 + 0.5) * W;
+        const y = (Math.cos(t * 0.28 + i * 2.2) * 0.5 + 0.5) * H;
+        const r = 50 + (i % 5) * 18;
+        const glow = ctx.createRadialGradient(x, y, 0, x, y, r);
+        glow.addColorStop(0, "rgba(210, 255, 230, 0.08)");
+        glow.addColorStop(1, "rgba(180, 230, 200, 0)");
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
     }
-    ctx.restore();
 
+    drawTadpoles(t);
     turtles.forEach((tur) => { if (inWater(tur.x, tur.y) && !coverAt(tur.x, tur.y)) drawFloorShadow(tur); });
     fishes.forEach((f) => { if (inWater(f.x, f.y) && !coverAt(f.x, f.y)) drawFloorShadow(f); });
     turtles.forEach((tur) => { if (inWater(tur.x, tur.y)) drawTurtle(tur, t); });
@@ -3141,9 +4035,12 @@
     frogs.forEach((fr) => drawFrog(fr, t, true));
     pellets.forEach(drawPellet);
     drawRings();
-    if (moving) drawLeaves();
-    else if (surface) ctx.drawImage(surface, 0, 0, W, H);
-    if (snowLevel > 0 && snowDraw) ctx.drawImage(snowDraw, 0, 0, W, H);
+    if (leafPieces.length) drawLeaves();
+    else if (surface) drawSurface();
+    if (!realistic) drawBlooms();
+    drawReeds(t);
+    if (snowLevel > 0 && snowDraw && !leafPieces.length) ctx.drawImage(snowDraw, 0, 0, W, H);
+    drawAutumnLeaves(t);
     drawBubbles(t);
 
     ripples.forEach((r) => {
@@ -3158,6 +4055,7 @@
     drawSplashes();
 
     butterflies.forEach((b) => drawButterfly(b, t));
+    drawDragonflies(t);
     motes.forEach((m) => {
       ctx.fillStyle = "rgba(255,255,255,0.75)";
       ctx.beginPath();
@@ -3213,6 +4111,7 @@
     const dt = Math.min(0.033, last ? (ts - last) / 1000 : 0.016);
     last = ts;
     const t = ts / 1000;
+    updateSeason(dt);
     updateGroups(dt);
     fishes.forEach((f) => steerFish(f, dt));
     updateTurtles(dt);
@@ -3257,7 +4156,7 @@
       return;
     }
     const extra = hoverFish.eaten ? " · 吃到 " + hoverFish.eaten + " 粒" : "";
-    tipEl.textContent = hoverFish.name + extra;
+    tipEl.textContent = hoverFish.name + " · " + PondFish.nameFor(hoverFish.species || "koi") + extra;
     tipEl.style.left = mouse.x + "px";
     tipEl.style.top = mouse.y + "px";
     tipEl.classList.remove("hidden");
@@ -3267,6 +4166,7 @@
     const list = fishes.map((f) => ({
       num: f.num,
       name: f.name,
+      species: f.species || "koi",
       eaten: f.eaten,
       color: f.color || "#f4f1ea",
       custom: !!f.custom,
@@ -3330,7 +4230,7 @@
     init,
     feed,
     setClock(tz) {
-      if (tz) state.tz = tz;
+      if (tz && tz !== state.tz) { state.tz = tz; seasonCheckAt = 0; }
       state.clockAt = 0;
     },
     setTimeMode(mode) {
@@ -3340,6 +4240,10 @@
     setMoonMode(mode) {
       state.moonMode = mode || "auto";
     },
+    setSeasonMode(mode) {
+      state.seasonMode = PondSeasons.names.includes(mode) ? mode : "auto";
+      seasonCheckAt = 0;
+    },
     setAtmosphere(next) {
       if (next.effect) {
         state.effect = next.effect;
@@ -3348,9 +4252,15 @@
         if (tint) tint.className = state.effect;
       }
       if (next.tz) state.tz = next.tz;
+      if ("latitude" in next) state.latitude = Number.isFinite(next.latitude) ? next.latitude : null;
+      if ("temperature" in next) state.temperature = Number.isFinite(next.temperature) ? next.temperature : null;
+      seasonCheckAt = 0;
       state.clockAt = 0;
     },
     addCustom(def) { return addCustom(def, true); },
+    getFishCounts() { return Object.assign({}, configuredFishCounts); },
+    setFishCounts,
+    fishThumbnail,
     removeCustom,
     getRanking,
     getCustoms,

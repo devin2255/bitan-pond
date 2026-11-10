@@ -163,7 +163,7 @@ button { cursor: pointer; }
 }
 .j-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   margin: 0 -16px;
   border-top: 1px solid var(--line);
 }
@@ -192,9 +192,13 @@ button { cursor: pointer; }
   position: absolute;
   top: 48px;
   right: 12px;
-  width: 148px;
+  width: 220px;
+  box-sizing: border-box;
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 6px;
-  background: rgba(24, 42, 40, 0.18);
+  background: rgba(24, 42, 40, 0.88);
   color: #f3f6f2;
   border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: 12px;
@@ -212,7 +216,7 @@ button { cursor: pointer; }
   border-radius: 8px;
   padding: 8px 10px;
 }
-.demo button.on, .demo button:hover { background: rgba(255, 255, 255, 0.1); }
+.demo button.on, .demo button:hover { background: rgba(255, 255, 255, 0.19); }
 .demo .grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -247,6 +251,7 @@ button { cursor: pointer; }
   padding: 22px 22px 18px;
 }
 .panel-rank { width: min(420px, 100%); }
+.panel-fish { width: min(490px, 100%); display: flex; flex-direction: column; overflow: hidden; }
 .panel-koi { width: min(520px, 100%); }
 .panel h2 { margin: 2px 0 6px; font-size: 22px; font-weight: 650; }
 .eyebrow { letter-spacing: 0.14em; font-size: 11px; color: #9a907f; }
@@ -311,6 +316,33 @@ button { cursor: pointer; }
 }
 .count { font-variant-numeric: tabular-nums; }
 .rank-foot { text-align: center; color: var(--muted); font-size: 12px; padding-top: 12px; }
+
+.fish-counts { display: grid; flex: 1 1 auto; min-height: 0; gap: 6px; margin: 12px 0 8px; overflow-y: auto; scrollbar-gutter: stable; }
+.fish-row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 8px;
+  border: 1px solid rgba(81, 109, 92, 0.13);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.48);
+}
+.fish-portrait { width: 64px; height: 40px; border-radius: 10px; background: #d6e8dc; display: grid; place-items: center; overflow: hidden; }
+.fish-portrait img { width: 100%; height: 100%; object-fit: contain; }
+.fish-name { color: #31443a; font-size: 14px; font-weight: 600; }
+.fish-detail { color: #839084; font-size: 12px; margin-top: 3px; }
+.fish-stepper { display: flex; align-items: center; border: 1px solid rgba(69, 102, 80, 0.2); border-radius: 999px; overflow: hidden; background: rgba(255,255,255,0.8); }
+.fish-stepper button { width: 30px; height: 32px; border: 0; background: transparent; color: #456558; font-size: 18px; }
+.fish-stepper button:hover { background: #dce9df; }
+.fish-stepper input { width: 38px; border: 0; outline: none; background: transparent; text-align: center; font: inherit; font-size: 14px; color: #31443a; appearance: textfield; -moz-appearance: textfield; }
+.fish-stepper input::-webkit-inner-spin-button, .fish-stepper input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.fish-count-status { min-height: 20px; margin: 8px 0 12px; color: #6e7e70; font-size: 12px; }
+.fish-count-status.error { color: #b34e40; }
+.fish-count-actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; }
+.fish-count-actions button { border: 1px solid rgba(62, 96, 77, 0.2); border-radius: 999px; background: transparent; padding: 8px 16px; color: #4c6658; }
+.fish-count-actions #fish-save { background: var(--teal); color: #f6f3ea; border-color: var(--teal); }
+.fish-count-actions #fish-save:disabled { opacity: 0.45; }
 
 .stage {
   height: 196px;

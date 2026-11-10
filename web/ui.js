@@ -18,6 +18,14 @@
     ["drizzle", "雾雨"],
   ];
 
+  const SEASONS = [
+    ["auto", "自动季节"],
+    ["spring", "春天"],
+    ["summer", "夏天"],
+    ["autumn", "秋天"],
+    ["winter", "冬天"],
+  ];
+
   const TIMES = [
     ["auto", "跟随时间"],
     ["dawn", "清晨"],
@@ -155,7 +163,10 @@
     let effect = demo === "auto" ? weatherEffect(code) : demo;
     if (demo === "auto" && effect === "clear" && wind >= 32) effect = "wind";
     if (effect === "fog") effect = "fog";
-    Pond.setAtmosphere({ effect: effect === "fog" ? "fog" : effect, wind: demo === "wind" ? 40 : wind, tz: (place && place.tz) || "Asia/Shanghai" });
+    const temperature = report && report.current && report.current.temperature_2m;
+    Pond.setAtmosphere({ effect: effect === "fog" ? "fog" : effect, wind: demo === "wind" ? 40 : wind,
+      tz: (place && place.tz) || "Asia/Shanghai", latitude: place ? place.lat : null,
+      temperature: temperature == null ? null : Number(temperature) });
   }
 
   function renderWeather() {
@@ -187,7 +198,7 @@
       if (!res.ok) throw new Error("status " + res.status);
       report = await res.json();
       report.fetchedAt = Date.now();
-      if (report.timezone) place.tz = report.timezone;
+      if (report.timezone && place.tz !== report.timezone) { place.tz = report.timezone; savePlace(); }
       try { localStorage.setItem("bitan.weather", JSON.stringify({ place, report })); } catch (err) { /* ignore */ }
       renderWeather();
       clockTick();
@@ -213,6 +224,8 @@
     $("use-geo").checked = false;
     markChips();
     closeOverlay("overlay-city");
+    applyAtmosphere();
+    clockTick();
     await loadWeather();
   }
 
@@ -305,6 +318,51 @@
     }
   }
 
+  function fishCountInput() {
+    return Object.fromEntries(PondFish.species.map((item) => [item.id, $("fish-count-" + item.id).value]));
+  }
+
+  function refreshFishCountStatus() {
+    const result = PondFish.validate(fishCountInput());
+    const status = $("fish-count-status");
+    status.textContent = result.ok ? `普通鱼共 ${result.total} 条，上限 ${PondFish.maxTotal} 条；自绘锦鲤另计。` : result.error;
+    status.classList.toggle("error", !result.ok);
+    $("fish-save").disabled = !result.ok;
+  }
+
+  function renderFishSettings() {
+    const counts = Pond.getFishCounts();
+    const box = $("fish-counts");
+    box.textContent = "";
+    PondFish.species.forEach((item) => {
+      const row = document.createElement("div"); row.className = "fish-row";
+      const portrait = document.createElement("div"); portrait.className = "fish-portrait";
+      const img = document.createElement("img"); img.alt = ""; img.src = Pond.fishThumbnail(item.id);
+      portrait.appendChild(img);
+      const description = document.createElement("div");
+      const name = document.createElement("div"); name.className = "fish-name"; name.textContent = item.name;
+      const detail = document.createElement("div"); detail.className = "fish-detail"; detail.textContent = item.detail;
+      description.append(name, detail);
+      const stepper = document.createElement("div"); stepper.className = "fish-stepper";
+      const minus = document.createElement("button"); minus.type = "button"; minus.textContent = "−"; minus.setAttribute("aria-label", "减少" + item.name);
+      const input = document.createElement("input"); input.type = "number"; input.id = "fish-count-" + item.id;
+      input.min = "0"; input.max = String(PondFish.maxPerSpecies); input.step = "1"; input.value = String(counts[item.id]);
+      input.setAttribute("aria-label", item.name + "数量"); input.setAttribute("inputmode", "numeric");
+      const plus = document.createElement("button"); plus.type = "button"; plus.textContent = "+"; plus.setAttribute("aria-label", "增加" + item.name);
+      minus.addEventListener("click", () => { input.value = String(Math.max(0, (Number(input.value) || 0) - 1)); refreshFishCountStatus(); });
+      plus.addEventListener("click", () => { input.value = String(Math.min(PondFish.maxPerSpecies, (Number(input.value) || 0) + 1)); refreshFishCountStatus(); });
+      input.addEventListener("input", refreshFishCountStatus);
+      stepper.append(minus, input, plus);
+      row.append(portrait, description, stepper); box.appendChild(row);
+    });
+    refreshFishCountStatus();
+  }
+
+  function openFishSettings() {
+    renderFishSettings();
+    openOverlay("overlay-fish");
+  }
+
   function renderRank() {
     const data = Pond.getRanking();
     const list = $("rank-list");
@@ -325,7 +383,7 @@
       name.textContent = fish.name;
       const id = document.createElement("div");
       id.className = "id";
-      id.textContent = "锦鲤 #" + String(fish.num).padStart(3, "0");
+      id.textContent = (fish.custom ? "自绘锦鲤" : PondFish.nameFor(fish.species)) + " #" + String(fish.num).padStart(3, "0");
       text.appendChild(name);
       text.appendChild(id);
       who.appendChild(no);
@@ -460,6 +518,7 @@
       ["在这里投喂", () => Pond.feed(x, y)],
       ["排行榜", () => { renderRank(); openOverlay("overlay-rank"); }],
       ["我的锦鲤", () => { renderGallery(); openOverlay("overlay-koi"); }],
+      ["鱼群设置", openFishSettings],
       ["设置城市", () => openOverlay("overlay-city")],
       [wallpaperOn ? "退出全屏" : "全屏", toggleFull],
     ];
@@ -474,9 +533,10 @@
       });
       menu.appendChild(btn);
     });
-    menu.style.left = Math.min(x, window.innerWidth - 180) + "px";
-    menu.style.top = Math.min(y, window.innerHeight - 220) + "px";
     menu.classList.remove("hidden");
+    const bounds = menu.getBoundingClientRect();
+    menu.style.left = Math.max(8, Math.min(x, window.innerWidth - bounds.width - 8)) + "px";
+    menu.style.top = Math.max(8, Math.min(y, window.innerHeight - bounds.height - 8)) + "px";
   }
 
   function toggleFull() {
@@ -506,6 +566,9 @@
     cap.className = "cap";
     cap.textContent = "天气演示";
     menu.appendChild(cap);
+    const weatherGrid = document.createElement("div");
+    weatherGrid.className = "grid";
+    menu.appendChild(weatherGrid);
     DEMO.forEach(([id, label]) => {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -518,8 +581,9 @@
         menu.classList.add("hidden");
         applyAtmosphere();
       });
-      menu.appendChild(btn);
+      weatherGrid.appendChild(btn);
     });
+    demoGroup(menu, "季节演示", SEASONS, (id) => Pond.setSeasonMode(id));
     demoGroup(menu, "时间演示", TIMES, (id) => Pond.setTimeMode(id));
     demoGroup(menu, "月相演示", MOONS, (id) => Pond.setMoonMode(id));
   }
@@ -570,6 +634,22 @@
     $("btn-city").addEventListener("click", () => openOverlay("overlay-city"));
     $("btn-rank").addEventListener("click", () => { renderRank(); openOverlay("overlay-rank"); });
     $("btn-koi").addEventListener("click", () => { renderGallery(); composite(); openOverlay("overlay-koi"); });
+    $("btn-fish").addEventListener("click", openFishSettings);
+    $("fish-defaults").addEventListener("click", () => {
+      const defaults = PondFish.defaults();
+      PondFish.species.forEach((item) => { $("fish-count-" + item.id).value = String(defaults[item.id]); });
+      refreshFishCountStatus();
+    });
+    $("fish-save").addEventListener("click", () => {
+      const result = Pond.setFishCounts(fishCountInput());
+      if (!result.ok) {
+        $("fish-count-status").textContent = result.error;
+        $("fish-count-status").classList.add("error");
+        return;
+      }
+      closeOverlay("overlay-fish");
+      toast("鱼群数量已更新");
+    });
     $("btn-demo").addEventListener("click", (e) => {
       e.stopPropagation();
       $("demo-menu").classList.toggle("hidden");
@@ -600,14 +680,15 @@
       });
     });
     view.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
       drawing = true;
-      view.setPointerCapture(e.pointerId);
+      try { view.setPointerCapture(e.pointerId); } catch (err) { /* 桌面模式下的点击不是系统指针，捕获会失败 */ }
       lastPt = localPoint(e);
       paintTo(lastPt);
     });
-    view.addEventListener("pointermove", (e) => { if (drawing) paintTo(localPoint(e)); });
-    view.addEventListener("pointerup", () => { drawing = false; });
-    view.addEventListener("pointerleave", () => { drawing = false; });
+    window.addEventListener("pointermove", (e) => { if (drawing) paintTo(localPoint(e)); });
+    window.addEventListener("pointerup", (e) => { if (e.button === 0) drawing = false; });
+    window.addEventListener("pointercancel", () => { drawing = false; });
 
     $("pond").addEventListener("contextmenu", (e) => {
       e.preventDefault();
@@ -650,6 +731,7 @@
   };
   Pond.onRoster = () => {
     if (!$("overlay-koi").classList.contains("hidden")) renderGallery();
+    if (!$("overlay-rank").classList.contains("hidden")) renderRank();
   };
   bootCities();
   bootDemo();
@@ -662,6 +744,7 @@
   syncSizeLabel();
   composite();
   restore();
+  applyAtmosphere();
   clockTick();
   setInterval(clockTick, 1000);
   if (place) {

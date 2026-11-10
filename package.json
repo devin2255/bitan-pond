@@ -6,6 +6,7 @@
   "author": "local",
   "scripts": {
     "start": "electron .",
+    "test": "node --test test/seasons.test.cjs test/fish-species.test.cjs test/fish-motion.test.cjs",
     "dist": "electron-builder --win portable"
   },
   "build": {
