@@ -3,7 +3,11 @@ const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const crypto = require("crypto");
+const { createStabilizer } = require("./media-monitor");
+const { createBeatTracker } = require("./music-beat");
 
+app.setName("塘里");
 app.setPath("userData", path.join(app.getPath("appData"), "bitan-pond"));
 app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 
@@ -17,6 +21,110 @@ let savedBounds = null;
 let savedMaximized = false;
 let toggleBusy = false;
 let detachDone = false;
+let musicWatcher = null;
+let musicRetry = null;
+let musicStopping = false;
+let musicState = { available: false, playing: false };
+const musicStable = createStabilizer();
+let rhythmEnabled = false;
+let rhythmProc = null;
+let rhythmRetry = null;
+
+function rhythmExe() {
+  const dir = app.getPath("userData");
+  const source = fs.readFileSync(path.join(__dirname, "music-beat.cs"));
+  const stamp = crypto.createHash("sha256").update(source).digest("hex").slice(0, 12);
+  const exe = path.join(dir, "music-beat-" + stamp + ".exe");
+  if (fs.existsSync(exe)) return exe;
+  fs.mkdirSync(dir, { recursive: true });
+  const sourceCopy = path.join(dir, "music-beat-" + stamp + ".cs");
+  fs.writeFileSync(sourceCopy, source);
+  const csc = path.join(process.env.SystemRoot || "C:\\Windows", "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe");
+  const result = spawnSync(csc, ["/nologo", "/optimize+", "/target:exe", "/out:" + exe, sourceCopy], { windowsHide: true, timeout: 30000 });
+  if (result.error || result.status !== 0) throw result.error || new Error("Audio level helper could not be compiled");
+  return exe;
+}
+
+function stopRhythmCapture() {
+  if (rhythmRetry) { clearTimeout(rhythmRetry); rhythmRetry = null; }
+  const proc = rhythmProc; rhythmProc = null;
+  if (proc) { try { proc.kill(); } catch (_) { /* Already stopped. */ } }
+}
+
+function startRhythmCapture() {
+  if (musicStopping || rhythmProc || rhythmRetry || !rhythmEnabled || !musicState.playing || process.platform !== "win32") return;
+  let exe;
+  try { exe = rhythmExe(); }
+  catch (_) { rhythmRetry = setTimeout(() => { rhythmRetry = null; startRhythmCapture(); }, 15000); return; }
+  const tracker = createBeatTracker();
+  const proc = spawn(exe, [String(process.pid)], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+  rhythmProc = proc;
+  let buffer = "";
+  proc.stdout.setEncoding("utf8");
+  proc.stdout.on("data", (chunk) => {
+    buffer += chunk;
+    let newline;
+    while ((newline = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newline).trim(); buffer = buffer.slice(newline + 1);
+      const parts = line.split(/\s+/);
+      if (parts.length !== 3) continue;
+      const event = tracker.update(Number(parts[1]), Number(parts[2]), Number(parts[0]));
+      if (event && rhythmEnabled && musicState.playing && win && !win.isDestroyed()) win.webContents.send("system-music-beat", event);
+    }
+  });
+  proc.on("error", () => {});
+  proc.on("close", () => {
+    if (rhythmProc !== proc) return;
+    rhythmProc = null;
+    if (!musicStopping && rhythmEnabled && musicState.playing) {
+      rhythmRetry = setTimeout(() => { rhythmRetry = null; startRhythmCapture(); }, 5000);
+    }
+  });
+}
+
+function publishMusicState(available, playing) {
+  if (musicState.available === available && musicState.playing === playing) return;
+  musicState = { available, playing };
+  if (win && !win.isDestroyed()) win.webContents.send("system-music-state", musicState);
+  if (playing) startRhythmCapture(); else stopRhythmCapture();
+}
+
+function startMusicWatcher() {
+  if (musicStopping || process.platform !== "win32") return;
+  let script;
+  try { script = fs.readFileSync(path.join(__dirname, "media-watch.ps1"), "utf8"); }
+  catch (_) { publishMusicState(false, false); return; }
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  const proc = spawn(psExe(), ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+    { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+  musicWatcher = proc;
+  let buffer = "";
+  proc.stdout.setEncoding("utf8");
+  proc.stdout.on("data", (chunk) => {
+    buffer += chunk;
+    let index;
+    while ((index = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, index).trim(); buffer = buffer.slice(index + 1);
+      if (line === "0" || line === "1") publishMusicState(true, musicStable.update(line === "1", Date.now()));
+      else if (line === "unavailable") publishMusicState(false, false);
+    }
+  });
+  proc.on("error", () => {});
+  proc.on("close", () => {
+    if (musicWatcher !== proc) return;
+    musicWatcher = null;
+    musicStable.reset();
+    publishMusicState(false, false);
+    if (!musicStopping) musicRetry = setTimeout(startMusicWatcher, 15000);
+  });
+}
+
+function stopMusicWatcher() {
+  musicStopping = true;
+  stopRhythmCapture();
+  if (musicRetry) clearTimeout(musicRetry);
+  if (musicWatcher) { try { musicWatcher.kill(); } catch (_) { /* Already stopped. */ } }
+}
 
 function psExe() {
   return path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
@@ -113,7 +221,7 @@ function refreshTrayMenu() {
 function ensureTray() {
   if (tray) return;
   tray = new Tray(makeIcon());
-  tray.setToolTip("鱼戏莲叶间 · 单击恢复窗口，或按 F11");
+  tray.setToolTip("塘里 · 单击恢复窗口，或按 F11");
   const back = () => {
     if (wallpaperOn || fullscreenFallback) toggleWallpaper();
   };
@@ -193,7 +301,7 @@ async function waitUnmaximize() {
 
 function balloon(content) {
   if (!tray) return;
-  tray.displayBalloon({ title: "鱼戏莲叶间", content });
+  tray.displayBalloon({ title: "塘里", content });
 }
 
 let deskProc = null;
@@ -465,7 +573,7 @@ function createWindow() {
     height: 800,
     minWidth: 1024,
     minHeight: 680,
-    title: "鱼戏莲叶间",
+    title: "塘里",
     backgroundColor: "#4fc2b4",
     autoHideMenuBar: true,
     show: false,
@@ -538,6 +646,12 @@ async function sweepPortableLeftovers() {
 
 ipcMain.handle("wallpaper:toggle", () => toggleWallpaper());
 ipcMain.handle("wallpaper:state", () => ({ on: wallpaperOn || fullscreenFallback }));
+ipcMain.handle("music:state", () => musicState);
+ipcMain.handle("music:rhythm-enabled", (_event, enabled) => {
+  rhythmEnabled = !!enabled;
+  if (rhythmEnabled) startRhythmCapture(); else stopRhythmCapture();
+  return rhythmEnabled;
+});
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
@@ -553,6 +667,7 @@ app.whenReady().then(() => {
     callback({ responseHeaders: headers });
   });
   createWindow();
+  startMusicWatcher();
   setTimeout(() => { sweepPortableLeftovers().catch(() => {}); }, 8000);
 });
 
@@ -576,6 +691,7 @@ function restoreDesktopWallpaperSync() {
 }
 
 app.on("before-quit", () => {
+  stopMusicWatcher();
   unregisterWallpaperHotkey();
   detachSync();
 });

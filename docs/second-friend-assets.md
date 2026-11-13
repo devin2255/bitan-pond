@@ -1,0 +1,47 @@
+# 第二位好兄弟素材
+
+第二位好兄弟的人脸、短发和眼镜参考用户提供的 `微信图片_20250706225254.jpg`；原人物的素材仅用于参考俯视视角、姿势和画风。生成结果保留透明背景。
+
+- `web/friend-relax-v1.png`：荷叶上的休息造型，生成结果 `exec-29004c52-f70b-4b6d-b7cd-0f55f6cd05b5.png`。
+- `web/friend-swim-v1.png`：普通水中动作的网格变形素材，生成结果 `exec-e7572cfd-2e72-4014-8480-2eaea6f91e60.png`。
+- `web/friend-swim-prone-v2.png`：普通蛙泳改为俯卧背面，内置 imagegen 生成结果 `exec-23f2259d-5ed7-41f5-b248-6fafa0df3e49.png`；穿原有蓝白格子无袖衬衫和深灰短裤。双臂与双腿由连续网格变形实现划水、收腿和蹬腿。
+- `web/friend-black-rest-v1.png`：黑色背心的休息造型，内置 imagegen 生成结果 `exec-e3a81cdf-58ca-4c05-bb53-8bf8bba55ac3.png`。
+- `web/friend-black-swim-v1.png`：俯卧蛙泳的黑色背心造型，内置 imagegen 生成结果 `exec-c3b6dbf3-a7ee-4ef5-ad9d-977e2e8b330b.png`。
+- `web/friend-black-swim-cycle-v2.png`：以 `boss-swim-cycle-v2.png` 为姿势基准的黑背心八帧蛙泳图集，内置 imagegen 生成结果 `exec-bf4bc00c-9ebf-4327-8285-b49de96bde2f.png`；优先按兄弟一相同的八帧时序播放，单张素材仅在图集不可用时作为备用。
+- `web/friend-black-reaction-v1.png`：黑色背心的起身、扑水动作图集，内置 imagegen 生成结果 `exec-4757221e-bd4e-4e21-9e64-24af22a1d657.png`；用于音乐表演开始时入水。
+- `web/friend-black-reaction-rig-v1.png`：黑色背心的正面关节动画素材，内置 imagegen 生成结果 `exec-b945c000-1931-42a3-88d4-d8e6656c11c1.png`；用于受击时连续移动手脚。
+- `web/friend-floral-rest-v1.png`：保留兄弟二面部、眼镜、发型与枕手翘腿姿势的东北大花袄和大花裤衩；内置 imagegen 生成结果 `exec-f0d73726-f36b-4268-9bae-b711dba9a2c7.png`。
+- `web/friend-floral-swim-v1.png`：同一套服装的俯卧蛙泳关节备用素材，生成结果 `exec-49957c0e-a655-4d21-9ba9-beabe4c6be35.png`。
+- `web/friend-floral-swim-cycle-v1.png`：沿用兄弟二原有八帧蛙泳姿势和 4×2 图集布局，生成结果 `exec-0ad809c1-fc9a-4477-8a5b-6606757ca023.png`。
+- `web/friend-floral-dive-v1.png`：沿用原有八帧入水动作的服装图集，生成结果 `exec-69976493-49be-410b-8fd9-b8d5767c0a51.png`。
+- `web/friend-floral-reaction-v1.png`：受击时使用的正面关节动画素材，生成结果 `exec-6d9ae716-9341-4cb7-b1ac-931a89e4c419.png`。
+- `web/friend-mermaid-v2.png`：蓝色鱼尾、露出上身的表演造型，生成结果 `exec-7de29292-0693-41dd-9698-93710dbd35f5.png`。
+- `web/boss-mermaid-v2.png`：第一位好兄弟露出上身的绿色鱼尾造型，生成结果 `exec-db55ea49-6e72-4c28-a14a-ba218c8bdf25.png`。
+
+美人鱼素材使用 imagegen 根据原图生成并编辑：保持人物面部、眼镜、发型、俯视姿态与鱼尾位置，移除上衣并生成自然的男性上身。两人的手臂和尾巴在运行时连续变形，表演不依赖逐帧切换照片。
+
+兄弟二大花套装使用 OpenAI 内置 imagegen 编辑：以各自的黑背心休息、蛙泳、入水及受击图为编辑目标，以兄弟一的东北大花服装和新生成的兄弟二休息造型为衣服参考；只将黑背心、灰裤衩替换为红色牡丹大花长袖棉袄及同款裤衩，保留兄弟二的脸、眼镜、发型、俯拍视角、透明背景、身体比例、各帧姿势和图集位置。蛙泳始终为俯卧背面。美人鱼表演使用原有的独立造型。
+
+俯卧蛙泳素材的生成提示词：
+
+> Use case: identity-preserve, game character sprite asset. Image 1 is the existing second friend's ordinary swimming character and gives the clothing, hairstyle, adult male proportions and exact silhouette/layout. Image 2 is only a camera/anatomy reference for the existing first character's face-down breaststroke; do not copy his outfit or create multiple frames. Create ONE new transparent-background square full-body sprite for the second friend, as a direct replacement for image 1. Critical correction: he must be lying horizontally FACE DOWN in the water viewed from straight overhead. We see the back of his short spiky black hair, back of neck, shoulder blades and back of clothing. His eyes, mouth, front of face, shirt buttons and chest pocket are NOT visible from above. Keep the blue and white sleeveless plaid shirt on his BACK, the same charcoal gray shorts, same adult body shape, bare arms and bare legs and bare feet. Use the same photographic cutout style and square sprite layout as image 1: top of head at 2% from top, both arms stretched directly horizontally to the sides at shoulder level, hands near edges, body in the middle and both legs together extending toward the bottom; entire figure on one plane, head at image top and feet at bottom, both arms connected anatomically at the shoulders, 2 arms/2 hands/2 legs/2 feet, no partial cropping. This neutral T-shape is an animation rig reference, NOT the final swim pose; the app will animate arm strokes and frog kicks afterward. Shirt must look like a realistic fabric back, no buttons and no pocket. Fully transparent background, isolated character only. No water, no leaf, no text, no border, no shadows on background.
+
+黑色背心休息素材的生成提示词：
+
+> Use case: identity-preserve, precise outfit edit for a game sprite. Edit the supplied image, changing ONLY the blue-and-white plaid collared sleeveless shirt into a plain solid BLACK sleeveless cotton tank top with a simple round neckline. No collar, buttons, pocket, patterns, writing, or logos. This is the second friend's resting-on-a-leaf game character. Preserve his exact same face, glasses, short spiky hairstyle, facial expression, skin, physique, original perspective and body pose: one hand under head and one crossed leg; preserve the gray shorts and bare legs and all limbs. Keep original subject position, scale, image framing and entire silhouette unchanged, no added accessories. Keep authentic transparent background and existing soft shadow. Full body, same photographic cutout style.
+
+黑色背心游泳素材的生成提示词：
+
+> Use case: identity-preserve, precise outfit edit for a game animation sprite. Edit the supplied image, changing ONLY the blue plaid shirt on the man's back into a plain solid BLACK sleeveless cotton tank top. No collar, buttons, pocket, patterns, writing, or logos. He remains lying FACE DOWN, seen exactly from above, only the back of the short spiky black-haired head is visible. Preserve original body shape, exact T-shaped pose, pixel geometry and framing, entire silhouette, hair, skin, gray shorts, legs, feet and hands unchanged. The plain black shirt must cover the back and expose both shoulders and arms. Keep original transparent background, no water, no shadows on the background, no text. This neutral sprite will be deformed by an animation rig, so pose and location must not change.
+
+黑色背心入水图集的生成提示词：
+
+> Use case: identity-preserve / game animation sprite sheet. Image 1 is an animation layout and pose reference. Image 2 is the actual second friend, in his new plain black tank top and charcoal shorts, with his short spiky black hair and glasses. Image 3 is the same man's face-down swimming back view. Create a transparent-background 4-COLUMN by 2-ROW game sprite sheet, exactly EIGHT full-body poses in one image, replacing the man in image 1 with the second friend from image 2 in EVERY pose. Follow image 1's eight positions and sequences in the exact same order, same top-down camera, same relative scale, same 4x2 equal cell layout: 1 lying with one hand behind head and legs crossed, 2 startled pushing himself up with hands and straightening legs, 3 drawing both knees up, 4 leaning forward and bracing with hands, 5 starting to lose balance, 6 reaching arms out as he falls, 7 leaning forward further, 8 face-down in water showing the back of his head, plain black tank and grey shorts as in image 3. Preserve the friend's face, glasses and spiky hair when his face is visible; matching muscular adult male proportions. BLACK tank top and the same charcoal shorts in ALL EIGHT frames. Full isolated figures, centered in each equal-size cell and scaled consistently, hands and feet fit within each cell, no overlap between cells. Natural anatomy, no detached or duplicated limbs. No borders, no text, no numbers, no decorative artifacts. Entire background transparent.
+
+黑色背心受击关节素材的生成提示词：
+
+> Use case: identity-preserve, precise outfit edit for an animated game character. Edit the supplied full-body T-pose sprite. Change ONLY his blue-and-white plaid collared shirt to a plain BLACK round-neck sleeveless tank top, without patterns, buttons, collar, pocket, text or logos. Exactly preserve this second friend's face, eyeglasses, short black hair, skin, body proportions, both outstretched arms and hands, gray shorts and both straight legs and feet. Keep exactly the same square canvas, positions, arm height, scale and neutral T-pose. Keep a fully transparent background. This is a single animation-rig reference sprite and must have no water, objects or shadow.
+
+黑色背心八帧蛙泳图集的生成提示词：
+
+> Use case: precise identity-preserving edit of an existing game-animation sprite sheet. Image 1 is the ACTUAL eight-frame breaststroke animation to edit and is the authoritative guide to body pose, composition, body size and frame order. Image 2 supplies the second friend's black sleeveless tank top, charcoal gray shorts and short spiky black hair as seen from behind. Create a replacement for image 1 with exactly the same 4-column by 2-row grid and exactly eight separate full-body figures, same pixel composition, same head placement, same arm positions, same knee, leg and foot positions, exactly the same sequence as image 1. Camera directly overhead looking at the swimmer's back; his face is down in the water and never visible. In all eight cells, change ONLY the white tank top to a plain BLACK tank top and keep the charcoal shorts and dark short hair matching image 2. Preserve the exact real breaststroke poses, including row 1: 1 both arms reaching forward and legs straight together, 2 arms sweep out and legs together, 3 elbows pull outward and legs together, 4 elbows pull back and BOTH knees bend; row 2: 5 knees drawn up and widely apart with heels close, 6 arms forward with legs kicking WIDE OUTWARD and nearly straight, 7 legs closing as arms reach forward, 8 arms and legs together extended for a glide. Do not skip any of the eight distinct positions. Each figure must have exactly two arms, two hands, two legs, two feet, anatomically attached. Keep the same scale and alignment between frames as image 1, all limbs inside their own square frame. This is a transparent animation sprite sheet, not a scene: no water, no leaf, no text, no dividing lines, no background, no extra shadow.

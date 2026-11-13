@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <base href="../web/" />
+  <title>双人表演动作验收</title>
+  <style>
+    body { margin: 0; background: #143b3b; color: #e8f7ed; font: 16px system-ui, sans-serif; }
+    p { margin: 10px 20px; } canvas { display: block; width: 100%; max-width: 1280px; }
+  </style>
+</head>
+<body>
+  <p>
+    <button id="start">开始双人表演</button><button id="stop">结束表演</button><button id="resume">继续播放</button>
+    <button data-formation="ring">圆环</button><button data-formation="lotus">荷花</button>
+    <button data-formation="heart">爱心</button><button data-formation="double">双环</button>
+    <button data-formation="spiral">漩涡</button><span id="state"></span>
+  </p>
+  <p>动作验收：<button data-move="0">同步抱水</button><button data-move="1">双人牵手游</button>
+    <button data-move="2">前后追游</button><button data-move="3">交替仰泳</button>
+    <button data-move="4">波浪接力</button><button data-move="5">对向伸手</button>
+    <button data-move="6">交错换位</button><button data-move="7">同步转体</button></p>
+  <canvas id="preview" width="1280" height="720"></canvas>
+  <script src="../web/boss-activity.js?v=whip3"></script>
+  <script src="../web/boss-dance.js?v=mermaid5"></script>
+  <script src="../web/boss-dance-rig.js?v=mermaid3"></script>
+  <script src="../web/boss-character.js?v=breaststroke2"></script>
+  <script>
+    const canvas = document.getElementById("preview"), ctx = canvas.getContext("2d");
+    const people = [PondBossCharacter.create(), PondBossCharacter.create({ variant: "friend" })];
+    people.forEach((person) => person.setEnabled(true));
+    const homes = [{ x: 210, y: 360, radius: 82 }, { x: 1070, y: 360, radius: 108 }];
+    const center = { x: 640, y: 360 }, radius = (homes[0].radius + homes[1].radius) / 2;
+    const clock = PondBossDance.create(), duet = PondBossDance.createDuet();
+    const leaf = new Image(); leaf.src = "../web/lotus-autumn-leaf.png";
+    let last = 0, showing = false, beat = 0, formation = "ring", phaseOffset = 0, heldPhase = null;
+    function frame(ts) {
+      const dt = Math.min(0.033, last ? (ts - last) / 1000 : 0.016); last = ts;
+      const weights = { [formation]: 1, radius: 480, clearance: 380 };
+      if (showing) {
+        clock.advance(dt); beat += dt;
+        if (beat >= 60 / 110) {
+          beat -= 60 / 110;
+          const event = { bpm: 110, confidence: 0.95, strength: 0.8 };
+          clock.beat(event); people.forEach((person) => person.noteBeat(event));
+        }
+      }
+      const phase = heldPhase == null ? clock.snapshot().phase + phaseOffset : heldPhase;
+      const pair = duet.advance(dt, phase, weights, radius, radius);
+      people.forEach((person, role) => {
+        const home = homes[role]; person.setPosition(home.x, home.y, home.radius, 0);
+        person.setPerformance(showing, center, weights, showing ? { phase, role, radius, point: role ? pair.second : pair.first } : null);
+        person.update(dt, () => {}, () => home);
+      });
+      document.getElementById("state").textContent = " · " + formation + (showing ? " · 110 BPM · " + pair.move.name : "");
+      ctx.fillStyle = "#39a99d"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (showing) {
+        ctx.save(); ctx.strokeStyle = "rgba(240,255,246,.38)"; ctx.setLineDash([7, 12]);
+        ctx.beginPath(); ctx.arc(center.x, center.y, 310, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+      }
+      people.forEach((person) => person.drawWater(ctx));
+      if (leaf.complete && leaf.naturalWidth) homes.forEach((p) => ctx.drawImage(leaf, p.x - p.radius, p.y - p.radius, p.radius * 2, p.radius * 2));
+      people.forEach((person) => person.drawTop(ctx));
+      requestAnimationFrame(frame);
+    }
+    document.getElementById("start").addEventListener("click", () => { showing = true; phaseOffset = 0; heldPhase = null; clock.reset(); duet.reset(); });
+    document.getElementById("stop").addEventListener("click", () => { showing = false; });
+    document.getElementById("resume").addEventListener("click", () => {
+      if (heldPhase != null) phaseOffset = heldPhase - clock.snapshot().phase;
+      heldPhase = null;
+    });
+    document.querySelectorAll("[data-formation]").forEach((button) => button.addEventListener("click", () => { formation = button.dataset.formation; }));
+    document.querySelectorAll("[data-move]").forEach((button) => button.addEventListener("click", () => {
+      heldPhase = Number(button.dataset.move) * PondBossDance.duetBeatsPerMove + 5;
+    }));
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

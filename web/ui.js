@@ -48,12 +48,30 @@
   let place = null;
   let report = null;
   let demo = "auto";
+  let musicOverride = "auto";
+  let systemMusicPlaying = false;
+  let rhythmEnabled = true;
+  try { rhythmEnabled = localStorage.getItem("bitan.music.rhythm") !== "0"; } catch (_) { /* Use the default. */ }
+  function setRhythmEnabled(value) {
+    rhythmEnabled = !!value;
+    try { localStorage.setItem("bitan.music.rhythm", rhythmEnabled ? "1" : "0"); } catch (_) { /* The setting is optional. */ }
+    Pond.setMusicRhythmEnabled(rhythmEnabled);
+    if (window.systemMusic && window.systemMusic.setRhythmEnabled) window.systemMusic.setRhythmEnabled(rhythmEnabled).catch(() => {});
+  }
+  function applyMusicShow() {
+    Pond.setMusicPlaying(musicOverride !== "auto" || systemMusicPlaying);
+    Pond.setMusicFormation(PondPerformance.formations.includes(musicOverride) ? musicOverride : "auto");
+  }
   let tool = "brush";
   let color = COLORS[0];
   let flipped = false;
   let drawing = false;
   let lastPt = null;
   let wallpaperOn = false;
+  function setWallpaperMode(on) {
+    wallpaperOn = !!on;
+    document.body.classList.toggle("wallpaper-mode", wallpaperOn);
+  }
   const view = $("koi-view");
   const pattern = document.createElement("canvas");
   pattern.width = view.width;
@@ -331,6 +349,13 @@
   }
 
   function renderFishSettings() {
+    $("boss-visible").checked = Pond.bossVisible();
+    $("friend-visible").checked = Pond.friendVisible();
+    $("music-rhythm").checked = rhythmEnabled;
+    document.querySelectorAll('input[name="boss-outfit"]').forEach((el) => { el.checked = el.value === Pond.bossOutfit(); });
+    document.querySelectorAll('input[name="friend-outfit"]').forEach((el) => { el.checked = el.value === Pond.friendOutfit(); });
+    $("outfit-status").textContent = "";
+    $("friend-outfit-status").textContent = "";
     const counts = Pond.getFishCounts();
     const box = $("fish-counts");
     box.textContent = "";
@@ -518,7 +543,10 @@
       ["在这里投喂", () => Pond.feed(x, y)],
       ["排行榜", () => { renderRank(); openOverlay("overlay-rank"); }],
       ["我的锦鲤", () => { renderGallery(); openOverlay("overlay-koi"); }],
-      ["鱼群设置", openFishSettings],
+      ["池塘设置", openFishSettings],
+      [Pond.bossVisible() ? "隐藏第一位好兄弟" : "显示第一位好兄弟", () => Pond.setBossVisible(!Pond.bossVisible())],
+      [Pond.friendVisible() ? "隐藏第二位好兄弟" : "显示第二位好兄弟", () => Pond.setFriendVisible(!Pond.friendVisible())],
+      [Pond.bossSound() ? "关闭鞭子音效" : "开启鞭子音效", () => Pond.setBossSound(!Pond.bossSound())],
       ["设置城市", () => openOverlay("overlay-city")],
       [wallpaperOn ? "退出全屏" : "全屏", toggleFull],
     ];
@@ -541,7 +569,7 @@
 
   function toggleFull() {
     if (window.wallpaper) {
-      window.wallpaper.toggle().then((state) => { wallpaperOn = !!(state && state.on); }).catch(() => {});
+      window.wallpaper.toggle().then((state) => setWallpaperMode(state && state.on)).catch(() => {});
       return;
     }
     if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
@@ -586,6 +614,9 @@
     demoGroup(menu, "季节演示", SEASONS, (id) => Pond.setSeasonMode(id));
     demoGroup(menu, "时间演示", TIMES, (id) => Pond.setTimeMode(id));
     demoGroup(menu, "月相演示", MOONS, (id) => Pond.setMoonMode(id));
+    demoGroup(menu, "音乐表演", [["auto", "跟随系统"], ["show", "循环预览"], ["ring", "圆圈"],
+      ["lotus", "荷花"], ["heart", "爱心"], ["double", "双环"], ["spiral", "漩涡"]],
+    (id) => { musicOverride = id; applyMusicShow(); });
   }
 
   function demoGroup(menu, title, items, apply) {
@@ -635,6 +666,22 @@
     $("btn-rank").addEventListener("click", () => { renderRank(); openOverlay("overlay-rank"); });
     $("btn-koi").addEventListener("click", () => { renderGallery(); composite(); openOverlay("overlay-koi"); });
     $("btn-fish").addEventListener("click", openFishSettings);
+    $("boss-visible").addEventListener("change", () => Pond.setBossVisible($("boss-visible").checked));
+    $("friend-visible").addEventListener("change", () => Pond.setFriendVisible($("friend-visible").checked));
+    $("music-rhythm").addEventListener("change", () => setRhythmEnabled($("music-rhythm").checked));
+    function bindOutfit(name, statusId, read, apply) {
+      const selector = `input[name="${name}"]`;
+      document.querySelectorAll(selector).forEach((el) => el.addEventListener("change", async () => {
+        if (!el.checked) return;
+        $(statusId).textContent = "正在准备服装…";
+        const ok = await apply(el.value);
+        if (document.querySelector(selector + ":checked") !== el) return;
+        $(statusId).textContent = ok ? "" : "服装加载失败，请重试";
+        if (!ok) document.querySelectorAll(selector).forEach((input) => { input.checked = input.value === read(); });
+      }));
+    }
+    bindOutfit("boss-outfit", "outfit-status", () => Pond.bossOutfit(), (value) => Pond.setBossOutfit(value));
+    bindOutfit("friend-outfit", "friend-outfit-status", () => Pond.friendOutfit(), (value) => Pond.setFriendOutfit(value));
     $("fish-defaults").addEventListener("click", () => {
       const defaults = PondFish.defaults();
       PondFish.species.forEach((item) => { $("fish-count-" + item.id).value = String(defaults[item.id]); });
@@ -726,6 +773,13 @@
   }
 
   Pond.init($("pond"));
+  setRhythmEnabled(rhythmEnabled);
+  if (window.systemMusic) {
+    const receiveMusicState = (state) => { systemMusicPlaying = !!(state && state.playing); applyMusicShow(); };
+    window.systemMusic.onChange(receiveMusicState);
+    if (window.systemMusic.onBeat) window.systemMusic.onBeat((event) => Pond.noteMusicBeat(event));
+    window.systemMusic.state().then(receiveMusicState).catch(() => {});
+  }
   Pond.onEat = () => {
     if (!$("overlay-rank").classList.contains("hidden")) renderRank();
   };
@@ -738,9 +792,10 @@
   bootSwatches();
   bind();
   if (window.wallpaper) {
-    window.wallpaper.state().then((state) => { wallpaperOn = !!(state && state.on); }).catch(() => {});
-    window.wallpaper.onChange((on) => { wallpaperOn = !!on; });
-  }
+    let stateVersion = 0;
+    window.wallpaper.onChange((on) => { stateVersion++; setWallpaperMode(on); });
+    window.wallpaper.state().then((state) => { if (!stateVersion) setWallpaperMode(state && state.on); }).catch(() => {});
+  } else document.addEventListener("fullscreenchange", () => setWallpaperMode(!!document.fullscreenElement));
   syncSizeLabel();
   composite();
   restore();

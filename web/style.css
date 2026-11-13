@@ -39,24 +39,6 @@ button { cursor: pointer; }
 #tint.wind { background: rgba(120, 150, 140, 0.06); }
 #tint.clear { background: transparent; }
 
-.brand {
-  position: fixed;
-  top: 18px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 5;
-  padding: 7px 18px 8px;
-  background: rgba(247, 242, 230, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.65);
-  border-radius: 10px;
-  box-shadow: 0 8px 22px rgba(40, 60, 50, 0.08);
-  color: #6a6256;
-  letter-spacing: 0.28em;
-  font-family: "KaiTi", "STKaiti", "Songti SC", serif;
-  font-size: 16px;
-  pointer-events: none;
-}
-
 .hint {
   position: fixed;
   left: 50%;
@@ -416,3 +398,20 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
   .journal { transform: scale(0.92); transform-origin: top right; }
   .j-time { font-size: 34px; }
 }
+.pond-character-setting { display:flex; align-items:center; gap:12px; margin:14px 0 18px; padding:13px 15px; border-radius:14px; background:rgba(83,130,100,.10); color:#294635; cursor:pointer; }
+.pond-character-setting input { width:19px; height:19px; accent-color:#557f5b; flex:none; }
+.pond-character-setting strong, .pond-character-setting small { display:block; }
+.pond-character-setting small { margin-top:3px; color:#65796b; font-size:12px; }
+.panel-fish .pond-character-setting { margin: 7px 0; padding: 10px 14px; }
+.friend-settings { display: flex; gap: 8px; }
+.friend-settings > .pond-character-setting { flex: 1 1 0; min-width: 0; }
+@media (max-width: 420px) { .friend-settings { flex-direction: column; gap: 0; } }
+.outfit-settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.outfit-setting { margin: 3px 0 6px; padding: 8px 14px 10px; border: 1px solid rgba(83,130,100,.18); border-radius: 14px; color: #294635; }
+.outfit-setting legend { padding: 0 5px; font-size: 13px; font-weight: 650; }
+.outfit-setting > div { display: flex; flex-wrap: wrap; gap: 10px 18px; }
+.outfit-setting label { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; cursor: pointer; }
+.outfit-setting input { accent-color: #557f5b; }
+.outfit-setting small { display: block; min-height: 0; color: #65796b; font-size: 12px; }
+.outfit-setting small:not(:empty) { margin-top: 6px; }
+@media (max-width: 420px) { .outfit-settings { grid-template-columns: 1fr; gap: 0; } }

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>双人手臂绘制验收</title>
+<style>body{font:16px system-ui;background:#d7eee8;color:#173d35;margin:18px}canvas{width:380px;height:380px;background:#81cabb;image-rendering:auto} .row{display:flex;gap:16px}.row div{display:flex;flex-direction:column;gap:4px} button{padding:8px;margin-right:8px} #results{white-space:pre-wrap}</style>
+</head>
+<body>
+<h1>双人手臂绘制验收</h1>
+<p>同一动作左侧为动画绘制，右侧为软件绘制；下方扫描两个人的全部动作。</p>
+<p><button id="audit">扫描全部动作</button><button id="next">查看下个动作</button> <span id="label"></span></p>
+<div class="row"><div>动画绘制<canvas id="gpu" width="380" height="380"></canvas></div>
+<div>软件绘制<canvas id="cpu" width="380" height="380"></canvas></div></div>
+<pre id="results">等待扫描</pre>
+<script src="../web/boss-dance.js?v=mermaid4"></script>
+<script src="../web/boss-dance-rig.js?v=mermaid3"></script>
+<script>
+const images = ['../web/boss-mermaid-v2.png','../web/friend-mermaid-v2.png'].map((src) => { const image = new Image(); image.src = src; return image; });
+const gpu = document.getElementById('gpu'), cpu = document.getElementById('cpu');
+const gx = gpu.getContext('2d', { willReadFrequently:true }), cx = cpu.getContext('2d', { willReadFrequently:true });
+let role = 0, phase = 0, renderer = '';
+function draw(ctx, image, pose, software) {
+  ctx.clearRect(0, 0, 380, 380);
+  PondBossDanceRig.draw(ctx, image, pose, 190, 190, 300, 0,
+    {columns:1, rows:1, mermaid:true, forceCanvas:software, onRenderer: (value) => { if (!software) renderer = value; }});
+}
+function show() {
+  const pose = PondBossDance.duetPoseAt(phase, {ring:1}, role);
+  draw(gx, images[role], pose, false); draw(cx, images[role], pose, true);
+  document.getElementById('label').textContent = (role ? '蓝色角色' : '绿色角色') + ' · ' + PondBossDance.duetMoveAt(phase).name + ' · ' + phase.toFixed(1) + ' 拍';
+}
+document.getElementById('next').onclick = () => { phase += 2; if (phase >= PondBossDance.duetMoves.length * 12) {phase = 0; role = 1 - role;} show(); };
+document.getElementById('audit').onclick = async () => {
+  document.getElementById('results').textContent = '正在扫描…';
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  const support = !!document.createElement('canvas').getContext('webgl');
+  let worst = 0, worstAt = '', scanned = 0, failures = 0;
+  for (let person = 0; person < images.length; person++) for (let p = 0; p < PondBossDance.duetMoves.length * 12; p += .5) {
+    const pose = PondBossDance.duetPoseAt(p, {ring:1}, person);
+    draw(gx, images[person], pose, false); draw(cx, images[person], pose, true);
+    const a = gx.getImageData(0,0,380,380).data, b = cx.getImageData(0,0,380,380).data;
+    let reference = 0, missing = 0;
+    for (let i = 3; i < b.length; i += 4) if (b[i] > 180) { reference++; if (a[i] < 30) missing++; }
+    const loss = reference ? missing / reference : 1;
+    if (loss > worst) { worst = loss; worstAt = (person ? '蓝色' : '绿色') + ' ' + PondBossDance.duetMoveAt(p).name + ' ' + p.toFixed(1) + '拍'; }
+    if (loss > .06) failures++;
+    scanned++;
+  }
+  document.getElementById('results').textContent = 'WebGL: ' + (support ? '可用' : '不可用') + ' · 实际渲染：' + renderer + '\n扫描帧数：' + scanned + '\n最大透明缺失：' + (worst * 100).toFixed(2) + '% · ' + worstAt + '\n超过 6% 的帧数：' + failures;
+  show();
+};
+Promise.all(images.map((image) => image.decode())).then(show);
+</script>
+</body></html>

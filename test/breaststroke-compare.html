@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <base href="../web/" />
+  <title>两位好兄弟蛙泳对照</title>
+  <style>
+    body { margin: 0; background: #143b3b; color: #e8f7ed; font: 16px system-ui, sans-serif; }
+    p { margin: 10px 20px; } canvas { display: block; width: 100%; max-width: 1280px; }
+  </style>
+</head>
+<body>
+  <p><button id="hit">点击两人落水</button><button id="pause">定格对照</button><button id="resume">继续播放</button>
+    <span id="state"></span></p>
+  <canvas id="preview" width="1280" height="780"></canvas>
+  <script src="../web/boss-activity.js?v=whip3"></script>
+  <script src="../web/boss-dance.js?v=mermaid5"></script>
+  <script src="../web/boss-dance-rig.js?v=friend-prone4"></script>
+  <script src="../web/boss-character.js?v=breaststroke2"></script>
+  <script>
+    const canvas = document.getElementById("preview"), ctx = canvas.getContext("2d");
+    const activities = [PondBossActivity.create(), PondBossActivity.create()];
+    const people = [PondBossCharacter.create({ activity: activities[0] }),
+      PondBossCharacter.create({ activity: activities[1], variant: "friend" })];
+    const homes = [{ x: 330, y: 155, radius: 62 }, { x: 950, y: 155, radius: 62 }];
+    people.forEach((p, i) => { p.setEnabled(true); p.setPosition(homes[i].x, homes[i].y, homes[i].radius, 0); });
+    people[0].setOutfit("classic");
+    const leaf = new Image(); leaf.src = "lotus-autumn-leaf.png";
+    const sheets = [new Image(), new Image()];
+    sheets[0].src = "boss-swim-cycle-v2.png"; sheets[1].src = "friend-black-swim-cycle-v2.png";
+    let last = 0, paused = false;
+    function drawFrame(image, index, x, y, size) {
+      if (!image.complete || !image.naturalWidth) return;
+      const cw = image.naturalWidth / 4, ch = image.naturalHeight / 2;
+      ctx.drawImage(image, (index % 4) * cw + 1, Math.floor(index / 4) * ch + 1, cw - 2, ch - 2,
+        x - size / 2, y - size / 2, size, size);
+    }
+    function frame(ts) {
+      const dt = Math.min(0.033, last ? (ts - last) / 1000 : 0.016); last = ts;
+      if (!paused) people.forEach((p, i) => p.update(dt, () => {}, () => homes[i]));
+      document.getElementById("state").textContent = " · " + activities.map((a) => a.mode + " " + a.elapsed.toFixed(1)).join(" / ");
+      ctx.fillStyle = "#299a94"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      people.forEach((p) => p.drawWater(ctx));
+      if (leaf.complete && leaf.naturalWidth) homes.forEach((p) => ctx.drawImage(leaf, p.x - p.radius, p.y - p.radius, p.radius * 2, p.radius * 2));
+      people.forEach((p) => p.drawTop(ctx)); people.forEach((p) => p.drawInteraction(ctx));
+      ctx.fillStyle = "#e8fff7"; ctx.font = "16px system-ui";
+      ctx.fillText("兄弟一：原有蛙泳", 18, 305); ctx.fillText("兄弟二：相同时序蛙泳", 18, 525);
+      for (let i = 0; i < 8; i++) {
+        const x = 80 + i * 160;
+        drawFrame(sheets[0], i, x, 405, 145); drawFrame(sheets[1], i, x, 625, 145);
+        ctx.fillText(String(i + 1), x - 4, 755);
+      }
+      requestAnimationFrame(frame);
+    }
+    document.getElementById("hit").onclick = () => { paused = false; people.forEach((p, i) => p.hit(homes[i].x, homes[i].y)); };
+    document.getElementById("pause").onclick = () => { paused = true; };
+    document.getElementById("resume").onclick = () => { paused = false; };
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

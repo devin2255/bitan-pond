@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <base href="../web/" />
+  <title>第二位好兄弟蛙泳验收</title>
+  <style>
+    body { margin: 0; background: #143b3b; color: #e8f7ed; font: 16px system-ui, sans-serif; }
+    p { margin: 10px 20px; } canvas { display: block; width: 100%; max-width: 1280px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <p><button id="strike">抽鞭子，检查落水和游回荷叶</button><span id="state"></span></p>
+  <canvas id="preview" width="1280" height="740"></canvas>
+  <script src="../web/boss-activity.js?v=whip3"></script>
+  <script src="../web/boss-dance.js?v=mermaid5"></script>
+  <script src="../web/boss-dance-rig.js?v=friend-prone4"></script>
+  <script src="../web/boss-character.js?v=breaststroke2"></script>
+  <script>
+    const canvas = document.getElementById("preview"), ctx = canvas.getContext("2d");
+    const activity = PondBossActivity.create();
+    const friend = PondBossCharacter.create({ activity, variant: "friend" });
+    friend.setEnabled(true);
+    const leaves = [{ x: 310, y: 220, radius: 68 }, { x: 930, y: 220, radius: 68 }];
+    let home = leaves[0], last = 0;
+    friend.setPosition(home.x, home.y, home.radius, 0);
+    const leaf = new Image(); leaf.src = "lotus-autumn-leaf.png";
+    const sprite = new Image(); sprite.src = "friend-black-swim-cycle-v2.png";
+    const chooseDestination = () => {
+      home = home === leaves[0] ? leaves[1] : leaves[0];
+      friend.setPosition(home.x, home.y, home.radius, 0);
+      return home;
+    };
+    function frame(ts) {
+      const dt = Math.min(0.033, last ? (ts - last) / 1000 : 0.016); last = ts;
+      friend.update(dt, () => {}, chooseDestination);
+      document.getElementById("state").textContent = " · 当前：" + activity.mode + " · " + activity.elapsed.toFixed(1) + " 秒";
+      ctx.fillStyle = "#39a99d"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      friend.drawWater(ctx);
+      if (leaf.complete && leaf.naturalWidth) leaves.forEach((p) => ctx.drawImage(leaf, p.x - p.radius, p.y - p.radius, p.radius * 2, p.radius * 2));
+      friend.drawTop(ctx);
+      friend.drawInteraction(ctx);
+      ctx.fillStyle = "#dff9ee"; ctx.font = "18px system-ui";
+      ctx.fillText("下方是实际蛙泳图集的四个阶段", 24, 405);
+      if (sprite.complete && sprite.naturalWidth) {
+        [0, 2, 4, 5].forEach((step, i) => {
+          const x = 160 + i * 300, cw = sprite.naturalWidth / 4, ch = sprite.naturalHeight / 2;
+          ctx.drawImage(sprite, (step % 4) * cw + 1, Math.floor(step / 4) * ch + 1, cw - 2, ch - 2,
+            x - 125, 430, 250, 250);
+          ctx.fillText(["向前伸展", "向外划水", "收腿", "蹬腿"][i], x - 35, 715);
+        });
+      }
+      requestAnimationFrame(frame);
+    }
+    document.getElementById("strike").addEventListener("click", () => friend.hit(home.x, home.y));
+    canvas.addEventListener("pointerdown", (e) => {
+      const box = canvas.getBoundingClientRect();
+      friend.hit((e.clientX - box.left) * canvas.width / box.width, (e.clientY - box.top) * canvas.height / box.height);
+    });
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

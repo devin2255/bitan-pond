@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <base href="../web/" />
+  <title>好兄弟互动验收</title>
+  <style>
+    body { margin: 0; background: #143b3b; color: #e8f7ed; font: 16px system-ui, sans-serif; }
+    p { margin: 10px 20px; } canvas { display: block; width: 100%; max-width: 1280px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <p><button id="hit-first">点击兄弟一</button><button id="hit-second">点击兄弟二</button>
+    <button id="hit-both">两人同时检查</button><button id="floral">切换兄弟一服装</button>
+    <button id="impact">定格：击中</button><button id="reaction">定格：受惊</button>
+    <button id="fall">定格：失衡</button><button id="resume">继续播放</button><span id="state"></span></p>
+  <canvas id="preview" width="1280" height="700"></canvas>
+  <script src="../web/boss-activity.js?v=whip3"></script>
+  <script src="../web/boss-dance.js?v=mermaid5"></script>
+  <script src="../web/boss-dance-rig.js?v=friend-prone4"></script>
+  <script src="../web/boss-character.js?v=breaststroke2"></script>
+  <script>
+    const canvas = document.getElementById("preview"), ctx = canvas.getContext("2d");
+    const activities = [PondBossActivity.create(), PondBossActivity.create()];
+    const people = [PondBossCharacter.create({ activity: activities[0] }),
+      PondBossCharacter.create({ activity: activities[1], variant: "friend" })];
+    const homes = [{ x: 315, y: 350, radius: 95 }, { x: 965, y: 350, radius: 95 }];
+    people.forEach((p, i) => { p.setEnabled(true); p.setPosition(homes[i].x, homes[i].y, homes[i].radius, 0); });
+    const leaf = new Image(); leaf.src = "lotus-autumn-leaf.png";
+    let last = 0, paused = false, floral = false;
+    function frame(ts) {
+      const dt = Math.min(0.033, last ? (ts - last) / 1000 : 0.016); last = ts;
+      if (!paused) people.forEach((p, i) => p.update(dt, () => {}, () => homes[i]));
+      document.getElementById("state").textContent = " · " + activities.map((a) => a.mode + " " + a.elapsed.toFixed(1)).join(" / ");
+      ctx.fillStyle = "#299a94"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      people.forEach((p) => p.drawWater(ctx));
+      if (leaf.complete && leaf.naturalWidth) homes.forEach((p) => ctx.drawImage(leaf, p.x - p.radius, p.y - p.radius, p.radius * 2, p.radius * 2));
+      people.forEach((p) => p.drawTop(ctx));
+      people.forEach((p) => p.drawInteraction(ctx));
+      requestAnimationFrame(frame);
+    }
+    function strike(i) { paused = false; people[i].hit(homes[i].x, homes[i].y); }
+    function freeze(mode, fraction) {
+      paused = true;
+      activities.forEach((a) => { a.mode = mode; a.pose = "lying"; a.duration = mode === "whip" ? 0.96 : 1; a.elapsed = a.duration * fraction; });
+    }
+    document.getElementById("hit-first").onclick = () => strike(0);
+    document.getElementById("hit-second").onclick = () => strike(1);
+    document.getElementById("hit-both").onclick = () => { strike(0); strike(1); };
+    document.getElementById("floral").onclick = () => { floral = !floral; people[0].setOutfit(floral ? "floral" : "classic"); };
+    document.getElementById("impact").onclick = () => freeze("whip", 0.52);
+    document.getElementById("reaction").onclick = () => freeze("whip", 0.88);
+    document.getElementById("fall").onclick = () => freeze("fall", 0.52);
+    document.getElementById("resume").onclick = () => { paused = false; };
+    canvas.addEventListener("pointerdown", (e) => {
+      const box = canvas.getBoundingClientRect(), x = (e.clientX - box.left) * canvas.width / box.width, y = (e.clientY - box.top) * canvas.height / box.height;
+      paused = false; people.some((p) => p.hit(x, y));
+    });
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

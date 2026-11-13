@@ -3,15 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>鱼戏莲叶间</title>
-  <link rel="stylesheet" href="style.css?v=fish2" />
+  <title>塘里</title>
+  <link rel="stylesheet" href="style.css?v=friend-outfit1" />
 </head>
 <body>
   <canvas id="pond"></canvas>
   <div id="tint"></div>
 
-  <div class="brand">鱼戏莲叶间</div>
-  <div id="hint" class="hint">单击水面投喂 · 光标靠近时鱼群会散开 · 右键可以打开菜单</div>
+  <div id="hint" class="hint">单击水面投喂 · 点击好兄弟互动 · 右键可以打开菜单</div>
   <div id="tip" class="tip hidden"></div>
   <div id="toast" class="toast hidden"></div>
   <div id="menu" class="menu hidden"></div>
@@ -39,7 +38,7 @@
     <div class="j-actions">
       <button id="btn-rank" type="button">排行榜</button>
       <button id="btn-koi" type="button">我的锦鲤</button>
-      <button id="btn-fish" type="button">鱼群</button>
+      <button id="btn-fish" type="button">池塘设置</button>
     </div>
     <div id="demo-menu" class="demo hidden" role="menu"></div>
   </aside>
@@ -80,7 +79,22 @@
     <div class="panel panel-fish" role="dialog" aria-modal="true" aria-labelledby="fish-title">
       <button class="x" type="button" data-close="overlay-fish" aria-label="关闭">×</button>
       <div class="eyebrow">POND LIFE</div>
-      <h2 id="fish-title">鱼群设置</h2>
+      <h2 id="fish-title">池塘设置</h2>
+      <div class="friend-settings">
+        <label class="pond-character-setting"><input id="boss-visible" type="checkbox" /> <span><strong>第一位好兄弟</strong><small>音乐响起时下水表演</small></span></label>
+        <label class="pond-character-setting"><input id="friend-visible" type="checkbox" /> <span><strong>第二位好兄弟</strong><small>与第一位一起表演</small></span></label>
+      </div>
+      <div class="outfit-settings">
+        <fieldset class="outfit-setting"><legend>第一位好兄弟的服装</legend><div>
+          <label><input type="radio" name="boss-outfit" value="classic" /> 背心裤衩</label>
+          <label><input type="radio" name="boss-outfit" value="floral" /> 东北大花袄＋裤衩</label>
+        </div><small id="outfit-status" role="status" aria-live="polite"></small></fieldset>
+        <fieldset class="outfit-setting"><legend>第二位好兄弟的服装</legend><div>
+          <label><input type="radio" name="friend-outfit" value="classic" /> 黑背心裤衩</label>
+          <label><input type="radio" name="friend-outfit" value="floral" /> 东北大花袄＋裤衩</label>
+        </div><small id="friend-outfit-status" role="status" aria-live="polite"></small></fieldset>
+      </div>
+      <label class="pond-character-setting"><input id="music-rhythm" type="checkbox" /> <span><strong>音乐节奏跟随</strong><small>播放时在本地分析系统声音，不保存或上传音频</small></span></label>
       <p class="sub">设置每种普通鱼的初始数量。保存后立即调整，下次打开也会记住；自己画的锦鲤会保留。</p>
       <div id="fish-counts" class="fish-counts"></div>
       <p id="fish-count-status" class="fish-count-status" role="status" aria-live="polite"></p>
@@ -133,7 +147,12 @@
   <script src="seasons.js?v=1"></script>
   <script src="fish-species.js?v=2"></script>
   <script src="fish-motion.js?v=1"></script>
-  <script src="pond.js?v=swim1"></script>
-  <script src="ui.js?v=fish2"></script>
+  <script src="boss-activity.js?v=whip3"></script>
+  <script src="boss-dance.js?v=mermaid5"></script>
+  <script src="boss-dance-rig.js?v=friend-prone4"></script>
+  <script src="pond-performance.js?v=duet4"></script>
+  <script src="boss-character.js?v=friend-outfit1"></script>
+  <script src="pond.js?v=friend-outfit1"></script>
+  <script src="ui.js?v=friend-outfit1"></script>
 </body>
 </html>

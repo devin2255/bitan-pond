@@ -27,6 +27,21 @@
   const turtles = [];
   const butterflies = [];
   const dragonflies = [];
+  const boss = PondBossCharacter.create();
+  const friend = PondBossCharacter.create({ variant: "friend" });
+  const performers = [boss, friend].map((actor, role) => ({ actor, role, host: null, radius: 0,
+    preferredRadius: 0, hostView: { width: 0, height: 0 } }));
+  let sharedPerformerRadius = null;
+  const duetClock = PondBossDance.create(), duet = PondBossDance.createDuet();
+  let musicPlaying = false;
+  let musicTime = 0;
+  let musicStrength = 0;
+  let musicOrder = [];
+  let musicFormation = "auto";
+  let musicFormationTransition = null;
+  let musicRhythmEnabled = true;
+  let musicTempoFactor = 1;
+  const musicConductor = PondPerformance.createConductor();
   const groups = [0, 1, 2].map(() => ({ x: 400, y: 300, tx: 400, ty: 300 }));
   let pellets = [];
   let ripples = [];
@@ -1960,7 +1975,13 @@
     return 0;
   }
 
-  function steerFish(f, dt) {
+  function orderMusicFish() {
+    // Slot zero is at the top of the pond; start the angular sort there too.
+    const angle = (fish) => (Math.atan2(fish.y - H / 2, fish.x - W / 2) + Math.PI * 2.5) % (Math.PI * 2);
+    return fishes.slice().sort((a, b) => angle(a) - angle(b));
+  }
+
+  function steerFish(f, dt, showSlot) {
     const movement = fishMotion(f);
     let tx = Math.cos(f.a);
     let ty = Math.sin(f.a);
@@ -2047,15 +2068,35 @@
     tx += ep.x * 2.2;
     ty += ep.y * 2.2;
 
+    let guidance = null;
+    if (musicStrength > 0.001 && showSlot) {
+      guidance = PondPerformance.formationGuidance(f, showSlot, W / 2, H / 2);
+      // Destination velocity anticipates the changing shape, while fish keep
+      // their own smooth turns and tail strokes instead of being teleported.
+      const sx = guidance.x / (guidance.speed || 1), sy = guidance.y / (guidance.speed || 1);
+      const blend = musicStrength;
+      tx = tx * (1 - blend) + sx * blend;
+      ty = ty * (1 - blend) + sy * blend;
+    }
+
     const desired = Math.atan2(ty, tx);
     let diff = desired - f.a;
     while (diff > Math.PI) diff -= Math.PI * 2;
     while (diff < -Math.PI) diff += Math.PI * 2;
     f.a += PondFishMotion.turn(movement, diff, dt);
+    const previousSpeed = movement.speed;
     PondFishMotion.advance(movement, f.baseSpeed, weatherMul(), f.boost > 0, dt, f.species);
+    if (guidance) {
+      // Slow into sharp turns rather than overshooting the moving outline.
+      const turnFactor = Math.max(0.4, 1 - Math.abs(diff) / Math.PI * 0.6);
+      const desiredSpeed = Math.max(6, guidance.speed * turnFactor);
+      const showSpeed = previousSpeed + (desiredSpeed - previousSpeed) * (1 - Math.exp(-1.8 * dt));
+      movement.speed += (showSpeed - movement.speed) * musicStrength;
+      movement.ratio = clamp(movement.speed / Math.max(1, f.baseSpeed), 0.1, 2.2);
+    }
     // A subtle thrust-and-glide pulse follows each tail beat.
     const step = movement.speed * (0.96 + 0.04 * Math.cos(movement.phase * 2)) * dt;
-    const nx = f.x + Math.cos(f.a) * step + windPush() * dt * 0.35;
+    const nx = f.x + Math.cos(f.a) * step + windPush() * dt * 0.35 * (1 - musicStrength);
     const ny = f.y + Math.sin(f.a) * step;
     moveInWater(f, nx, ny, dt);
     if (inWater(f.x, f.y)) {
@@ -2965,8 +3006,10 @@
   function frogSize() { return VIEW * 14; }
 
   function seatBlocked(s) {
+    if (performers.some((p) => p.actor.enabled && p.host && (leafPieces[s.leaf] === p.host ||
+        Math.hypot(s.x - p.host.cx - p.host.dx, s.y - p.host.cy - p.host.dy) < p.radius * 0.72))) return true;
     if (!coverAt(s.x, s.y)) return true;
-    const els = document.querySelectorAll(".journal, .brand");
+    const els = document.querySelectorAll(".journal");
     for (let i = 0; i < els.length; i++) {
       const r = els[i].getBoundingClientRect();
       if (!r.width) continue;
@@ -3072,6 +3115,19 @@
       splashes.push({ x: x, y: y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp * 0.8, z: 0, vz: 60 + Math.random() * 90, r: 0.8 + Math.random() * 1.4 });
     }
     scares.push({ x: x, y: y, until: performance.now() + 900 });
+  }
+
+  function addBossSplash(performer, x, y) {
+    const r = Math.max(10, performer.radius);
+    ripples.push({ x, y, r: 1.2, a: 0.7, grow: r * 1.35, max: r * 1.7 });
+    ripples.push({ x, y, r: 0.6, a: 0.5, grow: r * 0.95, max: r * 1.15 });
+    for (let i = 0; i < 12; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = r * (0.35 + Math.random() * 0.7);
+      splashes.push({ x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed * 0.8,
+        z: 0, vz: r * (1.4 + Math.random()), r: 0.8 + Math.random() * 0.7 });
+    }
+    scares.push({ x, y, until: performance.now() + 700 });
   }
 
   function updateFrogs(dt) {
@@ -3999,6 +4055,104 @@
     });
   }
 
+  function availableBossLeaves(performer) {
+      const choices = [];
+      const other = performers.find((candidate) => candidate !== performer && candidate.actor.enabled && candidate.host);
+      leafPieces.forEach((leaf, index) => {
+        if (!leaf || !leaf.canvas || leafAppearance(leaf).alpha <= 0.55 || PondPerformance.frogOwnsLeaf(index, seats, frogs)) return;
+        const radius = Math.min(leaf.canvas.width, leaf.canvas.height) * 0.46 * leafAppearance(leaf).scale;
+        // Reserve each whole leaf and avoid overlapping bodies on neighbours.
+        if (other && PondPerformance.conflictsWithReservedLeaf(leaf, radius, other.host, other.radius)) return;
+        if (radius < 9 || leaf.cx < radius * 1.35 || leaf.cy < radius * 1.35 ||
+            leaf.cx > W - radius * 1.35 || leaf.cy > H - radius * 1.35) return;
+        const hasBloom = blooms.some((flower) => flower.leaf === index);
+        const blocked = [[1.5, 0.5], [2.4, 0.1], [2.5, -0.8]].reduce((n, pair) => {
+          const x = leaf.cx + radius * pair[0], y = leaf.cy + radius * pair[1];
+          return n + (!inWater(x, y) || coverAt(x, y) ? 1 : 0);
+        }, 0);
+        const handX = leaf.cx - radius * 1.08, handY = leaf.cy - radius * 0.02;
+        const handBlocked = !inWater(handX, handY) || coverAt(handX, handY);
+        const sizeDifference = other ? Math.abs(radius - other.radius) * 6 : 0;
+        const score = Math.hypot(leaf.cx - W * (performer.role ? 0.62 : 0.38), leaf.cy - H * 0.55) * 0.20 - radius * 8 + sizeDifference +
+          (hasBloom ? 180 : 0) + blocked * 45 + (handBlocked ? 110 : 0);
+        choices.push({ leaf, score });
+      });
+      choices.sort((a, b) => a.score - b.score);
+      return choices;
+  }
+
+  function setBossHostPosition(performer) {
+    const leaf = performer.host;
+    if (!leaf) { performer.actor.clearPosition(); return; }
+    const look = leafAppearance(leaf);
+    performer.radius = Math.min(leaf.canvas.width, leaf.canvas.height) * 0.46 * look.scale;
+    if (!performer.preferredRadius) performer.preferredRadius = performer.radius;
+    performer.hostView = { width: W, height: H };
+    const displayRadius = sharedPerformerRadius == null ? performer.radius : sharedPerformerRadius;
+    performer.actor.setPosition(leaf.cx + leaf.dx, leaf.cy + leaf.dy, displayRadius, leaf.rot);
+    return { x: leaf.cx + leaf.dx, y: leaf.cy + leaf.dy, radius: displayRadius, rotation: leaf.rot };
+  }
+
+  function chooseBossDestination(performer) {
+    const candidates = availableBossLeaves(performer);
+    if (!candidates.length) return null;
+    // Prefer good landing spots, while allowing a different existing leaf.
+    const threshold = candidates[0].score + 170;
+    let good = candidates.filter((item) => item.score <= threshold).map((item) => item.leaf);
+    if (good.every((leaf) => leaf === performer.host) && candidates.length > 1) good = candidates.slice(0, 5).map((item) => item.leaf);
+    const comparable = good.filter((leaf) => {
+      const radius = Math.min(leaf.canvas.width, leaf.canvas.height) * 0.46 * leafAppearance(leaf).scale;
+      return radius >= performer.preferredRadius * 0.8 && radius <= performer.preferredRadius * 1.25;
+    });
+    if (comparable.some((leaf) => leaf !== performer.host)) good = comparable;
+    performer.host = PondPerformance.chooseLeaf(good, performer.host);
+    return setBossHostPosition(performer);
+  }
+
+  function updateBoss(dt, formation) {
+    if (!performers.every((p) => p.actor.enabled)) sharedPerformerRadius = null;
+    performers.forEach((performer) => {
+      if (!performer.actor.enabled) { performer.host = null; performer.actor.clearPosition(); return; }
+      let index = leafPieces.indexOf(performer.host);
+      if (index < 0 && performer.host) {
+        const candidates = availableBossLeaves(performer).map((item) => item.leaf);
+        const previous = performer.hostView;
+        const replacement = PondPerformance.matchLeaf(performer.host, candidates, W, H, previous.width, previous.height, performer.radius);
+        if (replacement) { performer.host = replacement; index = leafPieces.indexOf(replacement); }
+      }
+      if (index < 0 || !performer.host.canvas || leafAppearance(performer.host).alpha <= 0.55 ||
+          PondPerformance.frogOwnsLeaf(index, seats, frogs)) {
+        performer.host = null;
+        const candidates = availableBossLeaves(performer);
+        performer.host = candidates.length ? candidates[0].leaf : null;
+      }
+      setBossHostPosition(performer);
+    });
+    if (performers.every((p) => p.actor.enabled && p.host && p.radius > 0)) {
+      // One body size for both people in every activity. The smaller leaf
+      // determines a size that fits both, and changes ease in after a move.
+      const target = Math.min(...performers.map((p) => p.radius));
+      if (sharedPerformerRadius == null) sharedPerformerRadius = target;
+      else sharedPerformerRadius += (target - sharedPerformerRadius) * (1 - Math.exp(-Math.max(0, dt) * 2.2));
+      performers.forEach(setBossHostPosition);
+    } else sharedPerformerRadius = null;
+    const pairReady = musicPlaying && performers.every((p) => p.actor.enabled && p.actor.ready && p.host);
+    const rhythm = duetClock.snapshot();
+    // Their leaf sizes are independent, but their duet must use one shared
+    // body size and the same spacing geometry once they enter the water.
+    // Preserve their average performance size in the water; on the leaves
+    // the smaller shared size above keeps both figures within their hosts.
+    const pairRadius = pairReady ? (performers[0].radius + performers[1].radius) / 2 : 0;
+    const pair = pairReady ? duet.advance(dt, rhythm.phase, formation, pairRadius, pairRadius) : null;
+    performers.forEach((performer) => {
+      if (!performer.actor.enabled || !performer.host) return;
+      const partner = pair ? { point: performer.role ? pair.second : pair.first, phase: rhythm.phase,
+        role: performer.role, radius: pairRadius } : null;
+      performer.actor.setPerformance(musicPlaying, { x: W / 2, y: H / 2 }, formation, partner);
+      performer.actor.update(dt, (x, y) => addBossSplash(performer, x, y), () => chooseBossDestination(performer));
+    });
+  }
+
   function drawScene(t, dt) {
     ctx.clearRect(0, 0, W, H);
     const moving = leafS > 0.01 && pondBase && leafPieces.length;
@@ -4035,6 +4189,7 @@
     frogs.forEach((fr) => drawFrog(fr, t, true));
     pellets.forEach(drawPellet);
     drawRings();
+    performers.forEach((performer) => performer.actor.drawWater(ctx));
     if (leafPieces.length) drawLeaves();
     else if (surface) drawSurface();
     if (!realistic) drawBlooms();
@@ -4042,6 +4197,7 @@
     if (snowLevel > 0 && snowDraw && !leafPieces.length) ctx.drawImage(snowDraw, 0, 0, W, H);
     drawAutumnLeaves(t);
     drawBubbles(t);
+    performers.forEach((performer) => performer.actor.drawTop(ctx));
 
     ripples.forEach((r) => {
       if (!inWater(r.x, r.y) || coverAt(r.x, r.y)) return;
@@ -4096,6 +4252,8 @@
       ctx.fillStyle = "rgba(235,242,255," + (f * 0.32).toFixed(3) + ")";
       ctx.fillRect(0, 0, W, H);
     }
+    // A short interaction cue stays readable after the pond's night tint.
+    performers.forEach((performer) => performer.actor.drawInteraction(ctx));
 
     ctx.font = "600 13px 'Microsoft YaHei', sans-serif";
     ctx.textAlign = "center";
@@ -4108,12 +4266,41 @@
   }
 
   function frame(ts) {
-    const dt = Math.min(0.033, last ? (ts - last) / 1000 : 0.016);
+    const realDt = Math.max(0, last ? (ts - last) / 1000 : 0.016);
+    const dt = Math.min(0.033, realDt);
+    const musicDt = Math.min(0.1, realDt);
     last = ts;
     const t = ts / 1000;
     updateSeason(dt);
+    if (musicPlaying) { musicConductor.advance(realDt); duetClock.advance(musicDt); }
+    const rhythm = musicConductor.state();
+    const targetTempoFactor = musicPlaying && musicRhythmEnabled && rhythm.synchronized ? clamp(rhythm.tempo / 110, 0.75, 1.4) : 1;
+    musicTempoFactor += (targetTempoFactor - musicTempoFactor) * (1 - Math.exp(-1.5 * musicDt));
+    musicTime += musicDt * musicTempoFactor;
+    musicStrength += ((musicPlaying ? 1 : 0) - musicStrength) * (1 - Math.exp(-1.1 * musicDt));
+    if (musicPlaying && (musicOrder.length !== fishes.length || musicOrder.some((fish) => !fishes.includes(fish)))) {
+      musicOrder = orderMusicFish();
+    }
+    const showSlots = new Map();
+    let bossFormation = { ring: 0, radius: 0 };
+    if (musicStrength > 0.001 && musicOrder.length) {
+      const count = musicOrder.length;
+      const automatic = PondPerformance.formationWeights(musicConductor.position(), count);
+      const automaticFuture = PondPerformance.formationWeights(musicConductor.position(0.08), count);
+      const weights = PondPerformance.formationWeights(musicTime, count, musicFormation, musicFormationTransition, automatic);
+      const future = PondPerformance.formationWeights(musicTime + 0.08 * musicTempoFactor, count, musicFormation, musicFormationTransition, automaticFuture);
+      let clearance = Infinity;
+      const paired = performers.every((p) => p.actor.enabled && p.actor.ready && p.host);
+      const performerClearance = paired ? Math.max(...performers.map((p) => p.radius)) * 3.1 + 10 : 0;
+      musicOrder.forEach((fish, index) => {
+        const slot = PondPerformance.formationSlot(index, count, musicTime, W, H, weights, future, musicTempoFactor, performerClearance);
+        showSlots.set(fish, slot);
+        clearance = Math.min(clearance, Math.hypot(slot.x - W / 2, slot.y - H / 2));
+      });
+      bossFormation = { ...weights, radius: PondPerformance.ringSlot(0, count, musicTime, W, H).radius, clearance };
+    }
     updateGroups(dt);
-    fishes.forEach((f) => steerFish(f, dt));
+    fishes.forEach((f) => steerFish(f, musicStrength > 0.001 ? musicDt : dt, showSlots.get(f)));
     updateTurtles(dt);
     updateFrogs(dt);
     updateButterflies(dt, t);
@@ -4125,8 +4312,11 @@
     floats = floats.filter((fl) => fl.age < 1.3);
     updateWeather(dt, t);
     updateLeaves(dt, t);
+    updateBoss(musicPlaying ? musicDt : dt, bossFormation);
     drawScene(t, dt);
-    const picked = mouse.inside ? pickFish(mouse.x, mouse.y) : null;
+    const overBoss = mouse.inside && performers.some((p) => p.actor.hover(mouse.x, mouse.y));
+    canvas.style.cursor = overBoss ? "pointer" : "";
+    const picked = mouse.inside && !overBoss ? pickFish(mouse.x, mouse.y) : null;
     if (picked !== hoverFish) {
       hoverFish = picked;
       paintTip();
@@ -4138,10 +4328,12 @@
   }
 
   function pickFish(x, y) {
+    if (coverAt(x, y)) return null;
     let best = null;
     let bestD = 34;
     for (let i = 0; i < fishes.length; i++) {
       const f = fishes[i];
+      if (coverAt(f.x, f.y)) continue;
       const d = Math.hypot(f.x - x, f.y - y);
       const hit = 22 + f.scale * 16;
       if (d < hit && d < bestD) { bestD = d; best = f; }
@@ -4203,6 +4395,11 @@
     });
     canvas.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
+      if (performers.some((p) => p.actor.hit(e.clientX, e.clientY))) {
+        const hint = document.getElementById("hint");
+        if (hint) hint.classList.add("fade");
+        return;
+      }
       const frog = frogHit(e.clientX, e.clientY);
       if (frog) {
         frog.croak = 0.9;
@@ -4229,6 +4426,44 @@
   window.Pond = {
     init,
     feed,
+    bossVisible() { return boss.enabled; },
+    setBossVisible(value) { boss.setEnabled(value); if (!value) performers[0].host = null; },
+    friendVisible() { return friend.enabled; },
+    setFriendVisible(value) { friend.setEnabled(value); if (!value) performers[1].host = null; },
+    bossOutfit() { return boss.outfit; },
+    setBossOutfit(value) { return boss.setOutfit(value); },
+    friendOutfit() { return friend.outfit; },
+    setFriendOutfit(value) { return friend.setOutfit(value); },
+    setMusicPlaying(value) {
+      if (musicPlaying === !!value) return;
+      musicPlaying = !!value;
+      if (musicPlaying) {
+        musicTime = 0;
+        musicConductor.reset();
+        duetClock.reset(); duet.reset();
+        musicFormationTransition = null;
+        musicOrder = orderMusicFish();
+      }
+    },
+    setMusicFormation(value) {
+      const next = value === "auto" || PondPerformance.formations.includes(value) ? value : "auto";
+      if (next === musicFormation) return;
+      const automatic = PondPerformance.formationWeights(musicConductor.position(), musicOrder.length);
+      const from = PondPerformance.formationWeights(musicTime, musicOrder.length, musicFormation, musicFormationTransition, automatic);
+      musicFormation = next;
+      musicFormationTransition = { from, start: musicTime };
+    },
+    setMusicRhythmEnabled(value) {
+      musicRhythmEnabled = !!value;
+      if (!musicRhythmEnabled) musicConductor.resetRhythm();
+      duetClock.setRhythmEnabled(musicRhythmEnabled);
+      performers.forEach((p) => p.actor.setRhythmEnabled(musicRhythmEnabled));
+    },
+    noteMusicBeat(event) { if (musicPlaying && musicRhythmEnabled) {
+      musicConductor.beat(event); duetClock.beat(event); performers.forEach((p) => p.actor.noteBeat(event));
+    } },
+    bossSound() { return boss.sound; },
+    setBossSound(value) { performers.forEach((p) => p.actor.setSound(value)); },
     setClock(tz) {
       if (tz && tz !== state.tz) { state.tz = tz; seasonCheckAt = 0; }
       state.clockAt = 0;

@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <base href="../web/" />
+  <title>荷叶人物动作检查</title>
+  <style>
+    body { margin: 0; background: #143b3b; color: #e8f7ed; font: 16px system-ui, sans-serif; }
+    p { margin: 12px 20px; } canvas { display: block; width: 100%; max-width: 1200px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <p>点击人物检查互动；也可直接选择动作进行放大验收。
+    <button data-action="lying">躺着抖脚</button>
+    <button data-action="scratch">摸脚</button>
+    <button data-action="water">玩水</button>
+    <button data-action="climb">攀爬上岸</button>
+    <button id="show-start">音乐表演</button><button id="show-stop">结束表演</button>
+    <button id="classic">背心裤衩</button><button id="floral">东北大花袄</button>
+    <button id="slow">慢节奏</button><button id="fast">快节奏</button>
+    <button data-formation="ring">圆环</button><button data-formation="lotus">荷花</button>
+    <button data-formation="heart">爱心</button><button data-formation="double">双环</button>
+    <button data-formation="spiral">漩涡</button>
+    <span id="state"></span>
+  </p>
+  <canvas id="preview" width="1200" height="760"></canvas>
+  <script src="../web/boss-activity.js?v=whip3"></script>
+  <script src="../web/boss-dance.js?v=mermaid2"></script>
+  <script src="../web/boss-dance-rig.js?v=mermaid2"></script>
+  <script src="../web/pond-performance.js?v=rhythm2"></script>
+  <script src="../web/boss-character.js?v=breaststroke2"></script>
+  <script>
+    const canvas = document.getElementById("preview"), ctx = canvas.getContext("2d");
+    const activity = PondBossActivity.create();
+    const boss = PondBossCharacter.create({ activity });
+    boss.setEnabled(true);
+    const leaf = new Image(); leaf.src = "../web/lotus-autumn-leaf.png";
+    let last = 0, showing = false, bpm = 110, beatClock = 0, formation = "ring";
+    const weights = { ring: 1, lotus: 0, heart: 0, double: 0, spiral: 0 };
+    function frame(ts) {
+      const dt = Math.min(0.033, last ? (ts - last) / 1000 : 0.016); last = ts;
+      if (showing) {
+        beatClock += dt;
+        if (beatClock >= 60 / bpm) { beatClock -= 60 / bpm; boss.noteBeat({ bpm, confidence: 0.95, strength: 0.8 }); }
+      }
+      const blend = 1 - Math.exp(-dt * 1.6);
+      PondBossDance.formationNames.forEach((name) => { weights[name] += ((name === formation ? 1 : 0) - weights[name]) * blend; });
+      const fish = Array.from({ length: 48 }, (_, i) => PondPerformance.formationSlot(i, 48, ts / 1000, 867, 867, weights));
+      const clearance = Math.min(...fish.map((p) => Math.hypot(p.x - 433.5, p.y - 433.5)));
+      const radius = PondPerformance.ringSlot(0, 48, ts / 1000, 867, 867).radius;
+      boss.setPosition(370, 360, 50, 0); boss.setPerformance(showing, { x: 850, y: 380 }, { ...weights, radius, clearance });
+      boss.update(dt, () => {}, () => ({ x: 370, y: 360, radius: 50, rotation: 0 }));
+      document.getElementById("state").textContent = " · " + activity.mode + " · " + boss.outfit + (showing ? " · " + formation + " · " + bpm + " BPM" : "");
+      ctx.fillStyle = "#39a99d"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (showing) {
+        for (let i = 0; i < fish.length; i++) {
+          const p = fish[i];
+          ctx.save(); ctx.translate(850 + p.x - 433.5, 380 + p.y - 433.5);
+          ctx.rotate(Math.atan2(p.tangentY, p.tangentX));
+          ctx.fillStyle = i % 3 ? "#f5e7cf" : "#f38458";
+          ctx.beginPath(); ctx.ellipse(0, 0, 7, 3, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+        }
+      }
+      boss.drawWater(ctx);
+      if (leaf.complete && leaf.naturalWidth) ctx.drawImage(leaf, 320, 310, 100, 100);
+      boss.drawTop(ctx);
+      boss.drawInteraction(ctx);
+      requestAnimationFrame(frame);
+    }
+    canvas.addEventListener("pointerdown", (e) => {
+      const box = canvas.getBoundingClientRect();
+      boss.hit((e.clientX - box.left) * canvas.width / box.width, (e.clientY - box.top) * canvas.height / box.height);
+    });
+    document.getElementById("show-start").addEventListener("click", () => { showing = true; });
+    document.getElementById("show-stop").addEventListener("click", () => { showing = false; });
+    document.getElementById("classic").addEventListener("click", () => { boss.setOutfit("classic"); });
+    document.getElementById("floral").addEventListener("click", () => { boss.setOutfit("floral"); });
+    document.getElementById("slow").addEventListener("click", () => { bpm = 70; });
+    document.getElementById("fast").addEventListener("click", () => { bpm = 150; });
+    document.querySelectorAll("[data-formation]").forEach((button) => button.addEventListener("click", () => { formation = button.dataset.formation; }));
+    document.querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => {
+      activity.mode = button.dataset.action; activity.pose = "lying"; activity.elapsed = 0;
+      activity.duration = ({ lying: 30, scratch: 4.6, water: 5.2, climb: 3.4 })[activity.mode];
+    }));
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
