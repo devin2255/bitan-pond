@@ -49,6 +49,8 @@ npm start
 
 从 v1.1.1 开始，自动更新会同时检查 GitHub 和两条无需注册的第三方 GitHub 镜像；镜像可以在部分无法直连 GitHub 的网络环境下使用，但不承诺长期可用或在所有网络中可达。国内镜像的更新清单经过项目签名，所有分片和合并后的 EXE 都会校验 SHA-256；镜像失败时会切换下载源。旧版 v1.0.0 和 v1.1.0 尚无此镜像更新能力，无法直连 GitHub 的用户需要先手动下载一次 v1.1.1 或更新版本。
 
+首次下载 v1.1.1：[镜像一](https://gh-proxy.com/https://github.com/devin2255/bitan-pond/releases/download/v1.1.1/Tangli-v1.1.1-Windows-x64.exe) · [镜像二](https://ghproxy.net/https://github.com/devin2255/bitan-pond/releases/download/v1.1.1/Tangli-v1.1.1-Windows-x64.exe) · [GitHub](https://github.com/devin2255/bitan-pond/releases/tag/v1.1.1)。镜像由第三方提供，无法保证持续可用。
+
 发行维护步骤及签名密钥保管方式见 [国内更新发布](docs/国内更新发布.md)。
 
 ## 打包
