@@ -20,7 +20,15 @@ app.whenReady().then(async () => {
     };
     const release = await checkForUpdate(fetch, process.env.TANGLI_SMOKE_CURRENT || "0.0.0");
     if (!release) throw new Error("No release found");
-    if (process.argv.includes("--download")) downloaded = await downloadUpdate(fetch, release);
+    if (process.argv.includes("--download")) {
+      let lastProgress = -5;
+      downloaded = await downloadUpdate(fetch, release, { onProgress: (progress) => {
+        if (progress < lastProgress || progress >= lastProgress + 5) {
+          lastProgress = progress;
+          fs.writeFileSync(output, JSON.stringify({ running: true, version: release.version, progress }));
+        }
+      } });
+    }
     fs.writeFileSync(output, JSON.stringify({ ok: true, version: release.version, downloaded: !!downloaded,
       source: release.parts ? "signed-mirror" : "github", sha256: release.sha256, requests }));
     if (downloaded) {
