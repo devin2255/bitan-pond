@@ -3,7 +3,7 @@ const { app, net } = require("electron");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { checkForUpdate, downloadUpdate } = require("../updater");
+const { checkForUpdate, downloadUpdate } = require(process.env.TANGLI_SMOKE_UPDATER || "../updater");
 const output = process.env.TANGLI_SMOKE_RESULT;
 if (process.argv.includes("--no-proxy")) app.commandLine.appendSwitch("no-proxy-server");
 
