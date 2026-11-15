@@ -550,6 +550,7 @@
       ["设置城市", () => openOverlay("overlay-city")],
       [wallpaperOn ? "退出全屏" : "全屏", toggleFull],
     ];
+    if (window.appUpdates) items.splice(items.length - 1, 0, ["检查更新", () => window.appUpdates.check().catch(() => {})]);
     items.forEach(([label, fn]) => {
       const btn = document.createElement("button");
       btn.type = "button";

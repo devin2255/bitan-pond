@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, session, ipcMain, Tray, globalShortcut, nativeImage, screen } = require("electron");
+const { app, BrowserWindow, Menu, session, ipcMain, Tray, globalShortcut, nativeImage, screen, dialog, net, shell } = require("electron");
 const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
@@ -6,6 +6,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { createStabilizer } = require("./media-monitor");
 const { createBeatTracker } = require("./music-beat");
+const { checkForUpdate, downloadUpdate } = require("./updater");
 
 app.setName("塘里");
 app.setPath("userData", path.join(app.getPath("appData"), "bitan-pond"));
@@ -29,6 +30,14 @@ const musicStable = createStabilizer();
 let rhythmEnabled = false;
 let rhythmProc = null;
 let rhythmRetry = null;
+let updatePhase = "idle";
+let updatePercent = 0;
+let updateRelease = null;
+let updateDownload = null;
+let lastNotifiedUpdate = null;
+let updateStartupTimer = null;
+let updateInterval = null;
+let trayMonitor = null;
 
 function rhythmExe() {
   const dir = app.getPath("userData");
@@ -203,6 +212,13 @@ function makeIcon() {
         buf[i + 2] = 0x4f;
         buf[i + 3] = 255;
       }
+      // A small koi keeps the icon recognizable against the Windows taskbar.
+      const fish = ((x - 16) / 7.2) ** 2 + ((y - 16) / 3.6) ** 2 <= 1;
+      const tail = x >= 6 && x <= 10 && Math.abs(y - 16) <= (10 - x);
+      if (fish || tail) {
+        buf[i] = 0xef; buf[i + 1] = 0xf8; buf[i + 2] = 0xfa; buf[i + 3] = 255;
+        if (fish && x >= 19) { buf[i] = 0x48; buf[i + 1] = 0x68; buf[i + 2] = 0xea; }
+      }
     }
   }
   return nativeImage.createFromBitmap(buf, { width: size, height: size });
@@ -211,29 +227,139 @@ function makeIcon() {
 function refreshTrayMenu() {
   if (!tray) return;
   const on = wallpaperOn || fullscreenFallback;
+  const updateLabel = updatePhase === "checking" ? "正在检查更新…" :
+    updatePhase === "downloading" ? `正在下载更新 ${updatePercent}%` :
+    updatePhase === "ready" || updatePhase === "confirming" ? `安装更新 v${updateDownload.version}…` : "检查更新…";
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: on ? "恢复窗口" : "铺到桌面", click: () => toggleWallpaper() },
+    { label: updateLabel, enabled: !["checking", "downloading", "prompting", "confirming"].includes(updatePhase), click: () => checkUpdates(true) },
+    { label: `当前版本 ${app.getVersion()}`, enabled: false },
     { type: "separator" },
     { label: "退出", click: () => app.quit() },
   ]));
 }
 
 function ensureTray() {
-  if (tray) return;
-  tray = new Tray(makeIcon());
-  tray.setToolTip("塘里 · 单击恢复窗口，或按 F11");
-  const back = () => {
-    if (wallpaperOn || fullscreenFallback) toggleWallpaper();
-  };
-  tray.on("click", back);
-  tray.on("double-click", back);
-  refreshTrayMenu();
+  if (tray && !tray.isDestroyed()) return;
+  try {
+    tray = new Tray(makeIcon());
+    tray.setToolTip("塘里 · 单击打开窗口，右键查看菜单");
+    const back = () => {
+      if (wallpaperOn || fullscreenFallback) toggleWallpaper();
+      else if (win && !win.isDestroyed()) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+    };
+    tray.on("click", back);
+    refreshTrayMenu();
+  } catch (error) { tray = null; logWallpaperError(error); }
 }
 
 function destroyTray() {
   if (!tray) return;
   tray.destroy();
   tray = null;
+}
+
+function setUpdatePhase(phase, percent = 0) {
+  updatePhase = phase;
+  updatePercent = percent;
+  refreshTrayMenu();
+}
+
+function portableExecutable() {
+  const file = process.env.PORTABLE_EXECUTABLE_FILE;
+  if (!app.isPackaged || process.platform !== "win32" || !file || !path.isAbsolute(file) || path.extname(file).toLowerCase() !== ".exe") return null;
+  try { return fs.statSync(file).isFile() ? path.resolve(file) : null; } catch (_) { return null; }
+}
+
+async function message(options) {
+  return dialog.showMessageBox({ title: "塘里", ...options });
+}
+
+function markUpdateReady() {
+  const argument = process.argv.find((value) => /^--tangli-update-ready=[a-f0-9]{32}$/.test(value));
+  if (!argument) return;
+  const token = argument.slice(argument.indexOf("=") + 1);
+  try { fs.writeFileSync(path.join(os.tmpdir(), `tangli-update-ready-${token}.ok`), "ready", { flag: "wx" }); } catch (_) { /* The updater retains the backup if confirmation fails. */ }
+}
+
+async function installDownloadedUpdate() {
+  if (!updateDownload || updatePhase !== "ready") return;
+  const target = portableExecutable();
+  if (!target) {
+    await message({ type: "info", message: "当前运行方式不支持替换程序", detail: "请打开发行页面下载 Windows 便携版。", buttons: ["打开下载页面", "取消"], cancelId: 1 }).then((answer) => {
+      if (answer.response === 0 && updateRelease) return shell.openExternal(updateRelease.releaseURL);
+    });
+    return;
+  }
+  try {
+    // Test the actual destination directory before closing the application.
+    const probe = path.join(path.dirname(target), `.tangli-write-${crypto.randomBytes(12).toString("hex")}`);
+    const handle = await fs.promises.open(probe, "wx");
+    await handle.close();
+    await fs.promises.unlink(probe);
+    const helper = path.join(updateDownload.dir, "portable-update.ps1");
+    await fs.promises.copyFile(path.join(__dirname, "portable-update.ps1"), helper);
+    const token = crypto.randomBytes(16).toString("hex");
+    const child = spawn(psExe(), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", helper,
+      "-ParentId", String(process.pid), "-Source", updateDownload.file, "-Target", target,
+      "-Sha256", updateDownload.sha256, "-ReadyToken", token],
+    { detached: true, windowsHide: true, stdio: "ignore" });
+    await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+    child.unref();
+    app.quit();
+  } catch (error) {
+    await message({ type: "error", message: "无法安装更新", detail: `原程序没有改变。请检查程序所在目录是否有写入权限。\n${error.message}`, buttons: ["知道了"] });
+  }
+}
+
+async function offerInstall() {
+  if (!updateDownload) return;
+  setUpdatePhase("confirming");
+  const answer = await message({ type: "info", message: `塘里 v${updateDownload.version} 已下载`,
+    detail: "更新包已完成校验。重启后会替换当前便携版，并保留池塘设置。", buttons: ["立即重启并更新", "稍后"], defaultId: 0, cancelId: 1 });
+  setUpdatePhase("ready");
+  if (answer.response === 0) await installDownloadedUpdate();
+}
+
+async function checkUpdates(interactive = false) {
+  if (updatePhase === "ready") { if (interactive) await offerInstall(); return; }
+  if (["prompting", "confirming"].includes(updatePhase)) return;
+  if (updatePhase === "checking" || updatePhase === "downloading") {
+    if (interactive) await message({ type: "info", message: updatePhase === "checking" ? "正在检查更新" : `正在下载更新（${updatePercent}%）`, buttons: ["知道了"] });
+    return;
+  }
+  setUpdatePhase("checking");
+  let downloading = false;
+  try {
+    const release = await checkForUpdate((url, options) => net.fetch(url, options), app.getVersion());
+    if (!release) {
+      setUpdatePhase("idle");
+      if (interactive) await message({ type: "info", message: "当前已是最新版本", detail: `当前版本：${app.getVersion()}`, buttons: ["知道了"] });
+      return;
+    }
+    updateRelease = release;
+    setUpdatePhase("available");
+    if (!interactive && lastNotifiedUpdate === release.version) return;
+    lastNotifiedUpdate = release.version;
+    const portable = portableExecutable();
+    setUpdatePhase("prompting");
+    const answer = await message({ type: "info", message: `发现新版本 v${release.version}`,
+      detail: portable ? "可在线下载并在重启后更新。下载前不会修改当前程序。" : "当前运行方式不支持自动替换，可打开发行页面下载便携版。",
+      buttons: [portable ? "下载更新" : "打开下载页面", "稍后"], defaultId: 0, cancelId: 1 });
+    if (answer.response !== 0) { setUpdatePhase("available"); return; }
+    if (!portable) { setUpdatePhase("available"); await shell.openExternal(release.releaseURL); return; }
+    downloading = true;
+    setUpdatePhase("downloading");
+    balloon("正在下载更新，右键托盘图标可以查看进度。");
+    updateDownload = await downloadUpdate((url, options) => net.fetch(url, options), release, {
+      onProgress: (percent) => setUpdatePhase("downloading", percent),
+    });
+    setUpdatePhase("ready");
+    await offerInstall();
+  } catch (error) {
+    setUpdatePhase("idle");
+    if (interactive || downloading) await message({ type: "error", message: "更新未完成", detail: `原程序没有改变。请检查网络后重试。\n${error.message}`, buttons: ["知道了"] });
+  }
 }
 
 function primaryPixels() {
@@ -485,12 +611,14 @@ async function enterWallpaper() {
 async function enterFullscreenFallback() {
   fullscreenFallback = true;
   wallpaperOn = false;
-  win.setFullScreen(true);
+  // Maximizing preserves access to the Windows taskbar when desktop attachment fails.
+  win.setSkipTaskbar(false);
+  win.maximize();
   win.setMenuBarVisibility(false);
   ensureTray();
   refreshTrayMenu();
   registerWallpaperHotkey();
-  balloon("没能铺到桌面图标下面，已改为普通全屏。按 F11 恢复窗口。");
+  balloon("没能铺到桌面图标下面，已最大化窗口并保留任务栏。按 F11 恢复窗口。");
   sendState();
 }
 
@@ -525,7 +653,10 @@ async function leaveSpecial() {
       await runPs(["-Action", "detach", "-Hwnd", hwnd, "-Style", String(style), "-Ex", String(ex), "-Backup", wallpaperBackup()]);
       try { fs.unlinkSync(wallpaperBackup()); } catch (err) { /* ignore */ }
     }
-    if (fullscreenFallback && !win.isDestroyed() && win.isFullScreen()) win.setFullScreen(false);
+    if (fullscreenFallback && !win.isDestroyed()) {
+      if (win.isFullScreen()) win.setFullScreen(false);
+      if (!savedMaximized && win.isMaximized()) await waitUnmaximize();
+    }
   } finally {
     fullscreenFallback = false;
     wallpaperOn = false;
@@ -541,7 +672,7 @@ async function leaveSpecial() {
       win.focus();
       sendState();
     }
-    destroyTray();
+    refreshTrayMenu();
     writePref(false);
   }
 }
@@ -597,6 +728,7 @@ function createWindow() {
       win.maximize();
       win.show();
     }
+    markUpdateReady();
   });
 
   win.webContents.on("before-input-event", (event, input) => {
@@ -646,6 +778,7 @@ async function sweepPortableLeftovers() {
 
 ipcMain.handle("wallpaper:toggle", () => toggleWallpaper());
 ipcMain.handle("wallpaper:state", () => ({ on: wallpaperOn || fullscreenFallback }));
+ipcMain.handle("update:check", () => checkUpdates(true));
 ipcMain.handle("music:state", () => musicState);
 ipcMain.handle("music:rhythm-enabled", (_event, enabled) => {
   rhythmEnabled = !!enabled;
@@ -666,8 +799,14 @@ app.whenReady().then(() => {
     }
     callback({ responseHeaders: headers });
   });
+  ensureTray();
+  trayMonitor = setInterval(ensureTray, 30000);
   createWindow();
   startMusicWatcher();
+  if (app.isPackaged) {
+    updateStartupTimer = setTimeout(() => checkUpdates(false), 20000);
+    updateInterval = setInterval(() => checkUpdates(false), 6 * 60 * 60 * 1000);
+  }
   setTimeout(() => { sweepPortableLeftovers().catch(() => {}); }, 8000);
 });
 
@@ -691,12 +830,16 @@ function restoreDesktopWallpaperSync() {
 }
 
 app.on("before-quit", () => {
+  if (updateStartupTimer) clearTimeout(updateStartupTimer);
+  if (updateInterval) clearInterval(updateInterval);
+  if (trayMonitor) clearInterval(trayMonitor);
   stopMusicWatcher();
   unregisterWallpaperHotkey();
   detachSync();
 });
 
 app.on("will-quit", () => {
+  destroyTray();
   if (restoreDesktopWallpaperSync()) {
     try { fs.unlinkSync(wallpaperBackup()); } catch (err) { /* ignore */ }
   }

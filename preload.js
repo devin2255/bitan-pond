@@ -14,3 +14,7 @@ contextBridge.exposeInMainWorld("systemMusic", {
   setRhythmEnabled: (enabled) => ipcRenderer.invoke("music:rhythm-enabled", !!enabled),
   onBeat: (cb) => ipcRenderer.on("system-music-beat", (_event, value) => cb(value)),
 });
+
+contextBridge.exposeInMainWorld("appUpdates", {
+  check: () => ipcRenderer.invoke("update:check"),
+});

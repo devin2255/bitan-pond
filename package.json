@@ -1,12 +1,12 @@
 {
   "name": "bitan-pond",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "塘里：会跟着天气变化的桌面池塘",
   "main": "main.js",
   "author": "local",
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/seasons.test.cjs test/fish-species.test.cjs test/fish-motion.test.cjs test/fish-formation.test.cjs test/boss-activity.test.cjs test/boss-dance.test.cjs test/pond-performance.test.cjs test/music-beat.test.cjs test/friend-outfit.test.cjs",
+    "test": "node --test test/seasons.test.cjs test/fish-species.test.cjs test/fish-motion.test.cjs test/fish-formation.test.cjs test/boss-activity.test.cjs test/boss-dance.test.cjs test/pond-performance.test.cjs test/music-beat.test.cjs test/friend-outfit.test.cjs test/updater.test.cjs",
     "dist": "electron-builder --win portable"
   },
   "build": {
@@ -22,6 +22,8 @@
       "media-watch.ps1",
       "music-beat.js",
       "music-beat.cs",
+      "updater.js",
+      "portable-update.ps1",
       "wallpaper.ps1",
       "desk-input.cs",
       "web/**"
