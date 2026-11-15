@@ -4,6 +4,8 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { verifyFeed, httpsURL, MAX_MANIFEST_BYTES } = require("./update-feed");
+const UPDATE_CHANNEL = require("./update-channel.json");
 
 const RELEASE_API = "https://api.github.com/repos/devin2255/bitan-pond/releases/latest";
 const REPOSITORY = "https://github.com/devin2255/bitan-pond";
@@ -61,7 +63,36 @@ function timedSignal(timeout) {
   return { signal: controller.signal, done: () => clearTimeout(timer) };
 }
 
-async function checkForUpdate(fetch, currentVersion, timeout = 20000) {
+function parseDomesticRelease(envelope, currentVersion, channel) {
+  if (!channel || typeof channel.publicKey !== "string") throw new Error("国内更新源尚未配置");
+  const release = verifyFeed(envelope, channel.publicKey, { parseVersion, compareVersions, maxUpdateBytes: MAX_UPDATE_BYTES, currentVersion });
+  if (!release) return null;
+  return Object.freeze({ ...release,
+    url: `${REPOSITORY}/releases/download/${release.tag}/${release.name}`,
+    releaseURL: `${REPOSITORY}/releases/tag/${release.tag}`,
+  });
+}
+
+async function boundedJSON(response, maxBytes) {
+  const declared = Number(response.headers.get("content-length") || 0);
+  if (declared > maxBytes) throw new Error("更新信息过大");
+  if (!response.body) throw new Error("更新信息为空");
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0, done = false;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) { done = true; break; }
+      total += next.value.length;
+      if (total > maxBytes) throw new Error("更新信息过大");
+      chunks.push(Buffer.from(next.value));
+    }
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } finally { if (!done) await reader.cancel().catch(() => {}); }
+}
+
+async function checkGithub(fetch, currentVersion, timeout) {
   const timer = timedSignal(timeout);
   try {
     const response = await fetch(RELEASE_API, {
@@ -69,55 +100,128 @@ async function checkForUpdate(fetch, currentVersion, timeout = 20000) {
       cache: "no-store", signal: timer.signal,
     });
     if (!response.ok) throw new Error(`检查更新失败（HTTP ${response.status}）`);
-    const length = Number(response.headers.get("content-length") || 0);
-    if (length > 1024 * 1024) throw new Error("更新信息过大");
-    return parseRelease(await response.json(), currentVersion);
+    return parseRelease(await boundedJSON(response, 1024 * 1024), currentVersion);
   } finally { timer.done(); }
 }
 
-async function downloadUpdate(fetch, release, { tempRoot = os.tmpdir(), onProgress = () => {}, timeout = 30 * 60 * 1000 } = {}) {
-  // Revalidate all fields, including the trusted URL, immediately before download.
-  const verified = parseRelease({ tag_name: release.tag, draft: false, prerelease: false, body: release.notes,
-    assets: [{ name: release.name, state: "uploaded", size: release.size, digest: `sha256:${release.sha256}`, browser_download_url: release.url }] }, "0.0.0");
+async function checkDomestic(fetch, currentVersion, timeout, channel, feedUrl) {
+  const url = httpsURL(feedUrl);
+  const timer = timedSignal(timeout);
+  try {
+    const response = await fetch(url, { headers: { "User-Agent": "Tangli-Updater" }, cache: "no-store", signal: timer.signal });
+    if (!response.ok) throw new Error(`检查国内更新失败（HTTP ${response.status}）`);
+    const envelope = await boundedJSON(response, MAX_MANIFEST_BYTES * 2);
+    return parseDomesticRelease(envelope, currentVersion, channel);
+  } finally { timer.done(); }
+}
+
+async function checkForUpdate(fetch, currentVersion, timeout = 20000, channel = UPDATE_CHANNEL.domestic) {
+  const checks = [];
+  if (channel) {
+    const feedUrls = Array.isArray(channel.feedUrls) ? channel.feedUrls : [channel.feedUrl];
+    for (const url of feedUrls.slice(0, 4)) checks.push(checkDomestic(fetch, currentVersion, Math.min(timeout, 12000), channel, url));
+  }
+  checks.push(checkGithub(fetch, currentVersion, channel ? Math.min(timeout, 8000) : timeout));
+  const results = await Promise.allSettled(checks);
+  const releases = results.filter((result) => result.status === "fulfilled" && result.value).map((result) => result.value);
+  // On equal versions prefer the authenticated domestic download parts.
+  releases.sort((a, b) => compareVersions(b.version, a.version) || Number(!!b.parts) - Number(!!a.parts));
+  if (releases.length) return releases[0];
+  if (results.some((result) => result.status === "fulfilled")) return null;
+  throw results[0].reason;
+}
+
+async function downloadUpdate(fetch, release, { tempRoot = os.tmpdir(), onProgress = () => {}, timeout = 90 * 60 * 1000,
+  idleTimeout = 20000, channel = UPDATE_CHANNEL.domestic } = {}) {
+  // Revalidate all fields, including the signed mirror metadata, before download.
+  const verified = release.signedEnvelope ? parseDomesticRelease(release.signedEnvelope, "0.0.0", channel) :
+    parseRelease({ tag_name: release.tag, draft: false, prerelease: false, body: release.notes,
+      assets: [{ name: release.name, state: "uploaded", size: release.size, digest: `sha256:${release.sha256}`, browser_download_url: release.url }] }, "0.0.0");
   if (!verified) throw new Error("更新信息无效");
   const dir = await fs.promises.mkdtemp(path.join(tempRoot, "tangli-update-"));
   const file = path.join(dir, "update.exe");
   const timer = timedSignal(timeout);
-  let output = null, reader = null, succeeded = false;
+  let succeeded = false;
   try {
-    const response = await fetch(verified.url, { headers: { "User-Agent": "Tangli-Updater" }, signal: timer.signal });
-    if (!response.ok || !response.body) throw new Error(`下载更新失败（HTTP ${response.status}）`);
-    const reported = Number(response.headers.get("content-length") || 0);
-    if (reported && reported !== verified.size) throw new Error("更新包大小与发行信息不一致");
-    output = await fs.promises.open(file, "wx");
-    reader = response.body.getReader();
-    const hash = crypto.createHash("sha256");
-    let total = 0, lastPercent = -1, signature = Buffer.alloc(0);
-    while (true) {
-      const result = await reader.read();
-      if (result.done) break;
-      const buffer = Buffer.from(result.value);
-      if (signature.length < 2) signature = Buffer.concat([signature, buffer.subarray(0, 2 - signature.length)]);
-      total += buffer.length;
-      if (total > verified.size) throw new Error("下载内容超过发行包大小");
-      hash.update(buffer);
-      for (let offset = 0; offset < buffer.length;) {
-        const written = await output.write(buffer, offset, buffer.length - offset);
-        if (!written.bytesWritten) throw new Error("无法写入更新包");
-        offset += written.bytesWritten;
+    const github = [{ urls: [verified.url], size: verified.size, sha256: verified.sha256 }];
+    const sources = verified.parts ? [verified.parts, github] : [github];
+    const errors = [];
+    for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex++) {
+      let output = null;
+      try {
+        if (sourceIndex) onProgress(0);
+        output = await fs.promises.open(file, "wx");
+        let hash = crypto.createHash("sha256");
+        let total = 0, lastPercent = -1, signature = Buffer.alloc(0);
+        for (const part of sources[sourceIndex]) {
+          let complete = false, partError = null;
+          for (const url of part.urls) {
+            let reader = null, idleTimer = null;
+            const idle = new AbortController();
+            const resetIdle = () => {
+              if (idleTimer) clearTimeout(idleTimer);
+              idleTimer = setTimeout(() => idle.abort(), idleTimeout);
+              if (idleTimer.unref) idleTimer.unref();
+            };
+            try {
+              resetIdle();
+              const signal = AbortSignal.any([timer.signal, idle.signal]);
+              const response = await fetch(url, { headers: { "User-Agent": "Tangli-Updater" }, signal });
+              if (!response.ok || !response.body) throw new Error(`下载更新失败（HTTP ${response.status}）`);
+              const reported = Number(response.headers.get("content-length") || 0);
+              if (reported && reported !== part.size) throw new Error("更新包大小与发行信息不一致");
+              reader = response.body.getReader();
+              const partHash = crypto.createHash("sha256"), candidateHash = hash.copy();
+              let partBytes = 0, candidateSignature = signature;
+              while (true) {
+                const result = await reader.read();
+                if (result.done) break;
+                resetIdle();
+                const buffer = Buffer.from(result.value);
+                if (candidateSignature.length < 2) candidateSignature = Buffer.concat([candidateSignature, buffer.subarray(0, 2 - candidateSignature.length)]);
+                if (total + partBytes + buffer.length > verified.size || partBytes + buffer.length > part.size) throw new Error("下载内容超过发行包大小");
+                candidateHash.update(buffer); partHash.update(buffer);
+                for (let offset = 0; offset < buffer.length;) {
+                  const written = await output.write(buffer, offset, buffer.length - offset, total + partBytes + offset);
+                  if (!written.bytesWritten) throw new Error("无法写入更新包");
+                  offset += written.bytesWritten;
+                }
+                partBytes += buffer.length;
+                const percent = Math.min(100, Math.floor((total + partBytes) * 100 / verified.size));
+                if (percent !== lastPercent) { lastPercent = percent; onProgress(percent); }
+              }
+              reader = null;
+              if (partBytes !== part.size || partHash.digest("hex") !== part.sha256) throw new Error("更新包校验失败，已保留原程序");
+              hash = candidateHash; signature = candidateSignature; total += partBytes; complete = true;
+              break;
+            } catch (error) {
+              partError = error;
+              if (reader) await reader.cancel().catch(() => {});
+              await output.truncate(total);
+              lastPercent = Math.floor(total * 100 / verified.size);
+              onProgress(lastPercent);
+              if (timer.signal.aborted) throw error;
+            } finally {
+              if (idleTimer) clearTimeout(idleTimer);
+            }
+          }
+          if (!complete) throw partError;
+        }
+        await output.close(); output = null;
+        if (total !== verified.size || hash.digest("hex") !== verified.sha256) throw new Error("更新包校验失败，已保留原程序");
+        if (signature.length !== 2 || signature.toString("ascii") !== "MZ") throw new Error("更新包不是有效的 Windows 程序");
+        succeeded = true;
+        return { file, dir, version: verified.version, sha256: verified.sha256 };
+      } catch (error) {
+        errors.push(error);
+        if (output) await output.close().catch(() => {});
+        await fs.promises.unlink(file).catch(() => {});
+        if (timer.signal.aborted) break;
       }
-      const percent = Math.min(100, Math.floor(total * 100 / verified.size));
-      if (percent !== lastPercent) { lastPercent = percent; onProgress(percent); }
     }
-    await output.close(); output = null;
-    if (total !== verified.size || hash.digest("hex") !== verified.sha256) throw new Error("更新包校验失败，已保留原程序");
-    if (signature.length !== 2 || signature.toString("ascii") !== "MZ") throw new Error("更新包不是有效的 Windows 程序");
-    succeeded = true;
-    return { file, dir, version: verified.version, sha256: verified.sha256 };
+    throw errors[errors.length - 1];
   } finally {
     timer.done();
-    if (reader && !succeeded) await reader.cancel().catch(() => {});
-    if (output) await output.close().catch(() => {});
     if (!succeeded) {
       await fs.promises.unlink(file).catch(() => {});
       await fs.promises.rmdir(dir).catch(() => {});
@@ -125,4 +229,4 @@ async function downloadUpdate(fetch, release, { tempRoot = os.tmpdir(), onProgre
   }
 }
 
-module.exports = { RELEASE_API, MAX_UPDATE_BYTES, parseVersion, compareVersions, parseRelease, checkForUpdate, downloadUpdate };
+module.exports = { RELEASE_API, MAX_UPDATE_BYTES, parseVersion, compareVersions, parseRelease, parseDomesticRelease, checkForUpdate, downloadUpdate };

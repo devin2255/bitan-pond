@@ -1,0 +1,9 @@
+{
+  "domestic": {
+    "feedUrls": [
+      "https://gh-proxy.com/https://raw.githubusercontent.com/devin2255/bitan-pond/codex/boss-on-lotus/updates/latest.json",
+      "https://ghproxy.net/https://raw.githubusercontent.com/devin2255/bitan-pond/codex/boss-on-lotus/updates/latest.json"
+    ],
+    "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAfNdsnxtFXbjNAGpXLunvGMCPE7SCxBJJmp1rbqaPeZ0=\n-----END PUBLIC KEY-----\n"
+  }
+}
