@@ -122,6 +122,40 @@ test("uses a signed domestic feed and downloads its parts when GitHub is unavail
   assert.equal(calls.some((url) => url.startsWith("https://github.com/")), false);
 });
 
+test("downloads signed parts concurrently and reconstructs them in the right order", async (t) => {
+  const root = await tempRoot(t), fixture = domesticFixture(), started = [];
+  const item = parseDomesticRelease(fixture.envelope, "1.0.0", fixture.channel);
+  let releaseGate, overlap = false;
+  const gate = new Promise((resolve) => { releaseGate = resolve; });
+  const guard = setTimeout(() => releaseGate(), 250);
+  t.after(() => clearTimeout(guard));
+  const result = await downloadUpdate(async (url) => {
+    started.push(url);
+    if (started.length === fixture.buffers.length) { overlap = true; releaseGate(); }
+    await gate;
+    const index = fixture.manifest.parts.findIndex((part) => part.url === url);
+    assert.notEqual(index, -1);
+    return new Response(fixture.buffers[index]);
+  }, item, { tempRoot: root, channel: fixture.channel });
+  assert.equal(overlap, true, "parts did not overlap");
+  assert.deepEqual(await fs.promises.readFile(result.file), contents);
+});
+
+test("cancels other part requests before falling back to the full package", async (t) => {
+  const root = await tempRoot(t), fixture = domesticFixture();
+  const item = parseDomesticRelease(fixture.envelope, "1.0.0", fixture.channel);
+  let interrupted = false;
+  const result = await downloadUpdate((url, options) => {
+    if (url.startsWith("https://github.com/")) return Promise.resolve(new Response(contents));
+    if (url === fixture.manifest.parts[0].url) return Promise.resolve(new Response(Buffer.alloc(fixture.buffers[0].length)));
+    return new Promise((resolve, reject) => options.signal.addEventListener("abort", () => {
+      interrupted = true; reject(new Error("cancelled"));
+    }, { once: true }));
+  }, item, { tempRoot: root, channel: fixture.channel, idleTimeout: 1000 });
+  assert.equal(interrupted, true);
+  assert.deepEqual(await fs.promises.readFile(result.file), contents);
+});
+
 test("finds the update through the second feed when the first feed and GitHub are unavailable", async () => {
   const fixture = domesticFixture();
   const channel = { ...fixture.channel, feedUrls: ["https://offline.example.com/latest.json", fixture.channel.feedUrl] };
