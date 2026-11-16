@@ -52,20 +52,28 @@ app.whenReady().then(() => setTimeout(async () => {
       '({width:innerWidth,height:innerHeight,wallpaper:document.body.classList.contains("wallpaper-mode"),fish:Pond.getFishCounts()})')));
     assert(state.every((item) => item.width > 0 && item.height > 0 && item.wallpaper));
     assert.deepEqual(state[0].fish, state[1].fish);
+    const captureProcess = (script, args) => new Promise((resolve, reject) => {
+      const capture = spawn(psExe(), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+        path.join(output, "..", "tools", script), ...args], { windowsHide: true });
+      let error = "";
+      capture.stderr.on("data", (chunk) => { error += chunk.toString(); });
+      const timer = setTimeout(() => { capture.kill(); reject(new Error("Native capture timed out")); }, 30000);
+      capture.on("error", (cause) => { clearTimeout(timer); reject(cause); });
+      capture.on("close", (code) => { clearTimeout(timer); if (code === 0) resolve(); else reject(new Error("Native capture failed: " + error)); });
+    });
+    // This deliberately captures the test machine's whole screen only when
+    // opted in; regular developer runs do not capture unrelated applications.
+    if (process.env.TANGLI_TEST_SCREEN_CAPTURE === "1") {
+      await captureProcess("capture-test-screen.ps1", ["-Output", path.join(output, "multiscreen-screen.png")]);
+    }
+    const surfaceRanges = [];
     for (let i = 0; i < 2; i++) {
       const entry = [first, second][i];
+      fs.writeFileSync(path.join(output, `multiscreen-renderer-${i}.png`), (await entry.window.webContents.capturePage()).toPNG());
       // PrintWindow asks the owning UI process to paint; keep Electron's event
       // loop running while the separate capture process waits for that paint.
-      await new Promise((resolve, reject) => {
-        const capture = spawn(psExe(), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
-          path.join(output, "..", "tools", "capture-wallpaper-window.ps1"), "-Hwnd", hwndOf(entry.window),
-          "-Output", path.join(output, `multiscreen-native-${i}.png`)], { windowsHide: true });
-        let error = "";
-        capture.stderr.on("data", (chunk) => { error += chunk.toString(); });
-        const timer = setTimeout(() => { capture.kill(); reject(new Error("Native desktop window capture timed out")); }, 30000);
-        capture.on("error", (cause) => { clearTimeout(timer); reject(cause); });
-        capture.on("close", (code) => { clearTimeout(timer); if (code === 0) resolve(); else reject(new Error("Native desktop window capture failed: " + error)); });
-      });
+      await captureProcess("capture-wallpaper-window.ps1", ["-Hwnd", hwndOf(entry.window),
+        "-Output", path.join(output, `multiscreen-native-${i}.png`)]);
       assert.equal(entry.window.isVisible(), true, "A desktop window is still hidden");
       const picture = nativeImage.createFromPath(path.join(output, `multiscreen-native-${i}.png`));
       const size = picture.getSize(), bytes = picture.toBitmap();
@@ -78,8 +86,9 @@ app.whenReady().then(() => setTimeout(async () => {
           lo = Math.min(lo, brightness); hi = Math.max(hi, brightness);
         }
       }
-      assert(hi - lo > 24, "Native desktop surface appears blank");
+      surfaceRanges.push({ index: i, range: hi - lo });
     }
+    for (const surface of surfaceRanges) assert(surface.range > 24, `Native desktop surface ${surface.index} appears blank (${surface.range})`);
     // Exercise the same physical-to-renderer input route used on the desktop,
     // including both right-side controls on each independently sized screen.
     const desktopClick = async (entry, selector) => {

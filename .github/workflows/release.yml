@@ -44,10 +44,17 @@ jobs:
           powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File wallpaper.ps1 -Action probe
           npm ci
           node --test test/native-desktop.test.cjs
+          $env:TANGLI_TEST_SCREEN_CAPTURE = '1'
           & ./node_modules/.bin/electron.cmd tools/multiscreen-smoke.cjs
           Get-Content -Raw dist/multiscreen-smoke.json
           if (-not (Get-Content -Raw dist/multiscreen-smoke.json | ConvertFrom-Json).ok) { throw 'Desktop integration test failed' }
           exit 1
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && inputs.diagnoseDesktop }}
+        with:
+          name: desktop-diagnostic
+          path: dist/multiscreen-*.png
+          if-no-files-found: ignore
       - name: Check version and install dependencies
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
