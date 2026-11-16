@@ -49,7 +49,7 @@ npm start
 
 从 v1.1.3 开始，官方和镜像更新源都必须通过项目签名验证；签名绑定版本号、分片和完整程序的哈希。更新器并发检查多个来源，并行下载分片，某个镜像失败时会尝试其他地址。第三方镜像可以在部分无法直连 GitHub 的网络环境下使用，但不承诺长期可用或在所有网络中可达。v1.1.0 和更早版本在无法直连 GitHub 时需要先手动下载新版。
 
-首次下载 v1.1.3：[镜像一](https://gh-proxy.com/https://github.com/devin2255/bitan-pond/releases/download/v1.1.3/Tangli-v1.1.3-Windows-x64.exe) · [镜像二](https://ghproxy.net/https://github.com/devin2255/bitan-pond/releases/download/v1.1.3/Tangli-v1.1.3-Windows-x64.exe) · [GitHub](https://github.com/devin2255/bitan-pond/releases/tag/v1.1.3)。镜像由第三方提供，无法保证持续可用。
+首次下载 v1.1.4：[镜像一](https://gh-proxy.com/https://github.com/devin2255/bitan-pond/releases/download/v1.1.4/Tangli-v1.1.4-Windows-x64.exe) · [镜像二](https://ghproxy.net/https://github.com/devin2255/bitan-pond/releases/download/v1.1.4/Tangli-v1.1.4-Windows-x64.exe) · [GitHub](https://github.com/devin2255/bitan-pond/releases/tag/v1.1.4)。镜像由第三方提供，无法保证持续可用。
 
 发行维护步骤及签名密钥保管方式见 [国内更新发布](docs/国内更新发布.md)。
 
