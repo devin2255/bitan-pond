@@ -107,14 +107,7 @@ public static class DeskWp {
       raisedStyle ? new IntPtr(1) : IntPtr.Zero, 0, 1000, out result);
     // Modern Windows 11 hosts the icon view and the wallpaper WorkerW as
     // children of Progman. A separate layered child must sit between them.
-    if (IsRaisedDesktop(progman)) {
-      if (Environment.GetEnvironmentVariable("TANGLI_TEST_MODE") == "1" &&
-          Environment.GetEnvironmentVariable("TANGLI_TEST_RAISED_HOST") == "worker") {
-        IntPtr childWorker = FindWindowEx(progman, IntPtr.Zero, "WorkerW", null);
-        if (childWorker != IntPtr.Zero) return childWorker;
-      }
-      return progman;
-    }
+    if (IsRaisedDesktop(progman)) return progman;
     worker = IntPtr.Zero;
     host = IntPtr.Zero;
     keep = OnEnum;
@@ -128,10 +121,6 @@ public static class DeskWp {
     if (parent == IntPtr.Zero || ClassOf(parent) != "Progman") return false;
     long ex = GetWindowLongPtr(parent, -20).ToInt64();
     return (ex & 0x00200000L) != 0 && FindWindowEx(parent, IntPtr.Zero, "SHELLDLL_DefView", null) != IntPtr.Zero;
-  }
-
-  static bool IsRaisedWorker(IntPtr parent) {
-    return parent != IntPtr.Zero && ClassOf(parent) == "WorkerW" && IsRaisedDesktop(GetAncestor(parent, 1));
   }
 
   static string ClassOf(IntPtr h) {
@@ -208,7 +197,7 @@ public static class DeskWp {
     long next = (style & ~remove & ~0x80000000L) | 0x40000000L; // WS_CHILD, not WS_POPUP
     SetWindowLongPtr(hwnd, -16, new IntPtr(next));
     long ex2 = (ex | 0x80L | 0x08000000L) & ~0x00040000L;
-    bool raised = IsRaisedDesktop(parent) || IsRaisedWorker(parent);
+    bool raised = IsRaisedDesktop(parent);
     if (raised) ex2 |= 0x00080000L; // WS_EX_LAYERED on the raised desktop
     SetWindowLongPtr(hwnd, -20, new IntPtr(ex2));
     if (raised && !SetLayeredWindowAttributes(hwnd, 0, 255, 0x2)) {
