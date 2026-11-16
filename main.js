@@ -153,8 +153,13 @@ function psExe() {
 }
 
 function scriptFile() {
-  const dest = path.join(os.tmpdir(), "bitan-wallpaper.ps1");
-  fs.copyFileSync(path.join(__dirname, "wallpaper.ps1"), dest);
+  const source = fs.readFileSync(path.join(__dirname, "wallpaper.ps1"));
+  const stamp = crypto.createHash("sha256").update(source).digest("hex").slice(0, 16);
+  const dest = path.join(os.tmpdir(), "bitan-wallpaper-" + stamp + ".ps1");
+  if (!fs.existsSync(dest)) {
+    try { fs.writeFileSync(dest, source, { flag: "wx" }); }
+    catch (error) { if (error.code !== "EEXIST") throw error; }
+  }
   return dest;
 }
 
@@ -451,6 +456,8 @@ function balloon(content) {
 
 let deskProc = null;
 let deskBuf = "";
+let deskRetry = null;
+let deskFailures = 0;
 
 const DESK_BOOT = `window.__desk=function(type,x,y,b){
   if(type==="leave"){
@@ -493,33 +500,43 @@ function installDeskClient(target = win) {
 function hookExe() {
   const dir = app.getPath("userData");
   fs.mkdirSync(dir, { recursive: true });
-  const exe = path.join(dir, "desk-input.exe");
-  const src = path.join(__dirname, "desk-input.cs");
-  const srcCopy = path.join(dir, "desk-input.cs");
-  const stampPath = path.join(dir, "desk-input.stamp");
-  const stamp = String(fs.statSync(src).mtimeMs) + ":" + fs.statSync(src).size;
-  let stale = true;
-  try {
-    stale = !fs.existsSync(exe) || fs.readFileSync(stampPath, "utf8") !== stamp;
-  } catch (err) { stale = true; }
-  if (!stale) return exe;
-  fs.copyFileSync(src, srcCopy);
+  const source = fs.readFileSync(path.join(__dirname, "desk-input.cs"));
+  const stamp = crypto.createHash("sha256").update(source).digest("hex").slice(0, 16);
+  const exe = path.join(dir, "desk-input-" + stamp + ".exe");
+  if (fs.existsSync(exe)) return exe;
+  // Compile a new filename so a previous version's running hook never locks
+  // the executable needed by an update.
+  const tempBase = path.join(dir, "desk-input-build-" + stamp + "-" + process.pid);
+  const srcCopy = tempBase + ".cs", tempExe = tempBase + ".exe";
+  fs.writeFileSync(srcCopy, source);
   const csc = path.join(process.env.SystemRoot || "C:\\Windows", "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe");
-  const result = spawnSync(csc, ["/nologo", "/optimize+", "/out:" + exe, srcCopy], { windowsHide: true, timeout: 30000 });
-  if (result.status !== 0) {
-    throw new Error(((result.stdout && result.stdout.toString()) || "") + ((result.stderr && result.stderr.toString()) || "") || "编译桌面点击助手失败");
+  try {
+    const result = spawnSync(csc, ["/nologo", "/optimize+", "/out:" + tempExe, srcCopy], { windowsHide: true, timeout: 30000 });
+    if (result.status !== 0) throw new Error(((result.stdout && result.stdout.toString()) || "") + ((result.stderr && result.stderr.toString()) || "") || "编译桌面点击助手失败");
+    try { fs.renameSync(tempExe, exe); }
+    catch (error) { if (!fs.existsSync(exe)) throw error; }
+  } finally {
+    try { fs.unlinkSync(srcCopy); } catch (_) { /* Only our temporary build files are removed. */ }
+    try { fs.unlinkSync(tempExe); } catch (_) { /* The file was renamed or never created. */ }
   }
-  fs.writeFileSync(stampPath, stamp);
   return exe;
 }
 
 function stopDeskInput() {
+  if (deskRetry) { clearTimeout(deskRetry); deskRetry = null; }
   const proc = deskProc;
   deskProc = null;
   deskBuf = "";
   deskHover = null;
   if (!proc) return;
   try { proc.kill(); } catch (err) { /* ignore */ }
+}
+
+function retryDeskInput(error) {
+  if (error) logWallpaperError(error);
+  if (!wallpaperOn || deskRetry) return;
+  const wait = Math.min(30000, 2000 * (1 + deskFailures++));
+  deskRetry = setTimeout(() => { deskRetry = null; if (wallpaperOn) startDeskInput(); }, wait);
 }
 
 function deskSend(entry, type, x, y, extra) {
@@ -548,7 +565,8 @@ function deskSend(entry, type, x, y, extra) {
 function onDeskLine(line) {
   const parts = String(line).trim().split(/\s+/);
   if (!parts[0]) return;
-  if (parts[0] === "ready" || parts[0] === "origin") return;
+  if (parts[0] === "ready") { deskFailures = 0; return; }
+  if (parts[0] === "origin") return;
   if (parts[0] === "leave") {
     if (deskHover) { deskHover.movePending = null; deskSend(deskHover, "leave", 0, 0, 0); deskHover = null; }
     return;
@@ -579,6 +597,8 @@ function startDeskInput() {
     const screens = entries.map(({ window, rect }) => [hwndOf(window), rect.x, rect.y, rect.width, rect.height].join(",")).join(";");
     const proc = spawn(exe, [hwndOf(entries[0].window), String(process.pid), screens], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     deskProc = proc;
+    let errorOutput = "";
+    proc.stderr.on("data", (chunk) => { errorOutput = (errorOutput + chunk.toString("utf8")).slice(-4000); });
     proc.stdout.setEncoding("utf8");
     proc.stdout.on("data", (chunk) => {
       if (deskProc !== proc) return;
@@ -590,10 +610,13 @@ function startDeskInput() {
         onDeskLine(line);
       }
     });
-    proc.on("error", (error) => { if (deskProc === proc) { deskProc = null; logWallpaperError(error); } });
-    proc.on("exit", () => { if (deskProc === proc) deskProc = null; });
+    proc.on("error", (error) => { if (deskProc === proc) { deskProc = null; retryDeskInput(error); } });
+    proc.on("exit", (code) => { if (deskProc === proc) {
+      deskProc = null;
+      retryDeskInput(new Error("桌面交互助手已退出 (" + code + ") " + errorOutput));
+    } });
   } catch (err) {
-    logWallpaperError(err);
+    retryDeskInput(err);
   }
 }
 
@@ -654,6 +677,10 @@ async function createWallpaperWindow(display) {
   try {
     await target.loadFile(path.join(__dirname, "web", "index.html"));
     await attachWallpaperWindow(target, display);
+    // Native ShowWindow alone does not update Chromium's own window lifecycle.
+    // Explicitly show each additional renderer, then restore desktop z-order.
+    target.showInactive();
+    await moveWallpaperWindow(wallpaperWindows.get(display.id), display);
     return target;
   } catch (error) {
     if (!target.isDestroyed()) target.destroy();
@@ -706,6 +733,7 @@ async function enterWallpaper() {
     registerWallpaperHotkey();
     sendState();
     win.showInactive();
+    await moveWallpaperWindow(wallpaperWindows.get(displays[0].id), displays[0]);
     startDeskInput();
     balloon("已铺到所有屏幕。托盘图标或 F11 可以恢复窗口。");
   } catch (error) {

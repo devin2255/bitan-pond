@@ -66,6 +66,9 @@ public static class DeskWp {
   [DllImport("user32.dll")]
   public static extern bool ShowWindow(IntPtr hWnd, int cmd);
 
+  [DllImport("user32.dll", SetLastError = true)]
+  public static extern bool SetLayeredWindowAttributes(IntPtr hWnd, uint key, byte alpha, uint flags);
+
   [DllImport("user32.dll")]
   public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
 
@@ -98,6 +101,9 @@ public static class DeskWp {
     if (progman == IntPtr.Zero) return IntPtr.Zero;
     IntPtr result;
     SendMessageTimeout(progman, 0x052C, IntPtr.Zero, IntPtr.Zero, 0, 1000, out result);
+    // Modern Windows 11 hosts the icon view and the wallpaper WorkerW as
+    // children of Progman. A separate layered child must sit between them.
+    if (IsRaisedDesktop(progman)) return progman;
     worker = IntPtr.Zero;
     host = IntPtr.Zero;
     keep = OnEnum;
@@ -105,6 +111,12 @@ public static class DeskWp {
     if (worker != IntPtr.Zero) return worker;
     if (host != IntPtr.Zero) return host;
     return progman;
+  }
+
+  static bool IsRaisedDesktop(IntPtr parent) {
+    if (parent == IntPtr.Zero || ClassOf(parent) != "Progman") return false;
+    long ex = GetWindowLongPtr(parent, -20).ToInt64();
+    return (ex & 0x00200000L) != 0 && FindWindowEx(parent, IntPtr.Zero, "SHELLDLL_DefView", null) != IntPtr.Zero;
   }
 
   static string ClassOf(IntPtr h) {
@@ -120,7 +132,7 @@ public static class DeskWp {
     GetClientRect(parent, out r);
     int w = r.right - r.left;
     int h = r.bottom - r.top;
-    return "OK parent=" + parent.ToInt64() + " class=" + ClassOf(parent) + " w=" + w + " h=" + h;
+    return "OK parent=" + parent.ToInt64() + " class=" + ClassOf(parent) + " w=" + w + " h=" + h + " raised=" + (IsRaisedDesktop(parent) ? "1" : "0");
   }
 
   public static string Monitors() {
@@ -135,10 +147,23 @@ public static class DeskWp {
 
   static string Place(IntPtr hwnd, IntPtr parent, int left, int top, int width, int height) {
     if (width <= 0 || height <= 0) return "ERR invalid-size";
+    RECT client;
+    if (!GetClientRect(parent, out client)) return "ERR host-bounds";
+    POINT origin = new POINT { x = client.left, y = client.top };
+    MapWindowPoints(parent, IntPtr.Zero, ref origin, 1);
+    long hostRight = (long)origin.x + client.right - client.left;
+    long hostBottom = (long)origin.y + client.bottom - client.top;
+    // A child outside its parent's client area is clipped even when
+    // GetWindowRect reports the requested monitor bounds.
+    if (left < origin.x - 2 || top < origin.y - 2 || (long)left + width > hostRight + 2 || (long)top + height > hostBottom + 2)
+      return "ERR host-coverage x=" + origin.x + " y=" + origin.y + " w=" + (client.right - client.left) + " h=" + (client.bottom - client.top);
     POINT pos = new POINT { x = left, y = top };
     MapWindowPoints(IntPtr.Zero, parent, ref pos, 1);
     SetWindowRgn(hwnd, IntPtr.Zero, true);
-    if (!SetWindowPos(hwnd, new IntPtr(1), pos.x, pos.y, width, height, 0x0010 | 0x0020 | 0x0040)) return "ERR position";
+    // Insert each wallpaper immediately below the icons, keeping all monitor
+    // windows above the system's static wallpaper WorkerW.
+    IntPtr after = IsRaisedDesktop(parent) ? FindWindowEx(parent, IntPtr.Zero, "SHELLDLL_DefView", null) : new IntPtr(1);
+    if (!SetWindowPos(hwnd, after, pos.x, pos.y, width, height, 0x0010 | 0x0020 | 0x0040)) return "ERR position";
     ShowWindow(hwnd, 8);
     RECT actual;
     if (!GetWindowRect(hwnd, out actual)) return "ERR bounds";
@@ -161,9 +186,11 @@ public static class DeskWp {
     long style = GetWindowLongPtr(hwnd, -16).ToInt64();
     long ex = GetWindowLongPtr(hwnd, -20).ToInt64();
     long remove = 0x00C00000L | 0x00040000L | 0x00020000L | 0x00010000L | 0x00080000L | 0x00800000L | 0x00400000L;
-    long next = style & ~remove;
+    long next = (style & ~remove & ~0x80000000L) | 0x40000000L; // WS_CHILD, not WS_POPUP
     SetWindowLongPtr(hwnd, -16, new IntPtr(next));
     long ex2 = (ex | 0x80L | 0x08000000L) & ~0x00040000L;
+    bool raised = IsRaisedDesktop(parent);
+    if (raised) ex2 |= 0x00080000L; // WS_EX_LAYERED on the raised desktop
     SetWindowLongPtr(hwnd, -20, new IntPtr(ex2));
     SetParent(hwnd, parent);
     IntPtr now = GetAncestor(hwnd, 1);
@@ -171,6 +198,12 @@ public static class DeskWp {
       SetWindowLongPtr(hwnd, -16, new IntPtr(style));
       SetWindowLongPtr(hwnd, -20, new IntPtr(ex));
       return "ERR parent style=" + style + " ex=" + ex + " now=" + now.ToInt64();
+    }
+    if (raised && !SetLayeredWindowAttributes(hwnd, 0, 255, 0x2)) {
+      SetParent(hwnd, IntPtr.Zero);
+      SetWindowLongPtr(hwnd, -16, new IntPtr(style));
+      SetWindowLongPtr(hwnd, -20, new IntPtr(ex));
+      return "ERR layered";
     }
     string result = Place(hwnd, parent, left, top, width, height);
     if (result.StartsWith("ERR")) {

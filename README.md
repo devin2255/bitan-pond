@@ -14,6 +14,7 @@
 - 画一条自己的锦鲤，放进池塘后会一起游动、避让和吃食。
 - 按这次打开后吃到的鱼粮看排行榜。重新打开软件会重新计数。
 - 铺到桌面图标下面，当桌面壁纸使用。托盘图标或 F11 可以恢复窗口。
+- 桌面模式为每块显示器分别适配尺寸，并针对新版 Windows 桌面窗口层级和交互方式做兼容处理；若交互助手意外退出会自动重试。
 - 应用运行期间保留系统托盘图标，右键托盘或池塘可检查更新；发现新版本后可在线下载，校验通过后重启更新。
 - 右上角可以预览季节、天气、时段和月相；选择「自动季节」后继续跟随当地日期。
 - 画面性能默认为自动适配：根据运行时的流畅程度调整渲染细节，并在性能有余时逐步恢复。鱼的数量、天气、人物和互动玩法保持不变；也可在「池塘设置」选择画质优先或流畅优先。
@@ -52,7 +53,7 @@ npm start
 
 从 v1.1.3 开始，官方和镜像更新源都必须通过项目签名验证；签名绑定版本号、分片和完整程序的哈希。更新器并发检查多个来源，并行下载分片，某个镜像失败时会尝试其他地址。第三方镜像可以在部分无法直连 GitHub 的网络环境下使用，但不承诺长期可用或在所有网络中可达。v1.1.0 和更早版本在无法直连 GitHub 时需要先手动下载新版。
 
-首次下载 v1.1.6 安装版：[镜像一](https://gh-proxy.com/https://github.com/devin2255/bitan-pond/releases/download/v1.1.6/Tangli-v1.1.6-Setup.exe) · [镜像二](https://ghproxy.net/https://github.com/devin2255/bitan-pond/releases/download/v1.1.6/Tangli-v1.1.6-Setup.exe) · [GitHub](https://github.com/devin2255/bitan-pond/releases/tag/v1.1.6)。镜像由第三方提供，无法保证持续可用。
+首次下载 v1.1.7 安装版：[镜像一](https://gh-proxy.com/https://github.com/devin2255/bitan-pond/releases/download/v1.1.7/Tangli-v1.1.7-Setup.exe) · [镜像二](https://ghproxy.net/https://github.com/devin2255/bitan-pond/releases/download/v1.1.7/Tangli-v1.1.7-Setup.exe) · [GitHub](https://github.com/devin2255/bitan-pond/releases/tag/v1.1.7)。镜像由第三方提供，无法保证持续可用。
 
 发行维护步骤及签名密钥保管方式见 [国内更新发布](docs/国内更新发布.md)。
 

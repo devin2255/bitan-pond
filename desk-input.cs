@@ -62,6 +62,7 @@ internal static class DeskInput {
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr lParam);
   [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
   [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
   [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr hwnd, ref POINT pt);
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out int pid);
   [DllImport("user32.dll")] static extern int SetWindowRgn(IntPtr hwnd, IntPtr rgn, bool redraw);
@@ -119,10 +120,10 @@ internal static class DeskInput {
     RefreshIcons();
     RECT wr;
     GetWindowRect(target, out wr);
-    Emit("ready " + wr.left + " " + wr.top);
     keep = OnMouse;
     hook = SetWindowsHookEx(WH_MOUSE_LL, keep, IntPtr.Zero, 0);
     if (hook == IntPtr.Zero) return 3;
+    Emit("ready " + wr.left + " " + wr.top);
     SetTimer(IntPtr.Zero, new IntPtr(1), 700, IntPtr.Zero);
     MSG msg;
     while (GetMessage(out msg, IntPtr.Zero, 0, 0) > 0) {
@@ -163,11 +164,17 @@ internal static class DeskInput {
   }
 
   static bool OnDesktop(IntPtr hwnd) {
-    for (IntPtr p = hwnd; p != IntPtr.Zero; p = GetParent(p)) if (targets.Contains(p)) return true;
-    string cls = ClassOf(hwnd);
     string root = ClassOf(GetAncestor(hwnd, GA_ROOT));
-    if (cls == "SysListView32" || cls == "SHELLDLL_DefView") return root == "Progman" || root == "WorkerW" || root == "";
-    return cls == "Progman" || cls == "WorkerW";
+    bool desktopRoot = root == "Progman" || root == "WorkerW";
+    // Windows 11 may put additional shell child windows above DefView.
+    // Walk their ancestry instead of recognizing only the leaf class.
+    for (IntPtr p = hwnd; p != IntPtr.Zero; p = GetParent(p)) {
+      if (targets.Contains(p)) return true;
+      string cls = ClassOf(p);
+      if ((desktopRoot || root == "") && (cls == "SysListView32" || cls == "SHELLDLL_DefView")) return true;
+      if (desktopRoot && (cls == "Progman" || cls == "WorkerW")) return true;
+    }
+    return false;
   }
 
   static bool OnEnum(IntPtr hwnd, IntPtr lParam) {
@@ -232,7 +239,9 @@ internal static class DeskInput {
   static void RefreshIcons() {
     try {
       IntPtr lv = FindListView();
-      if (lv == IntPtr.Zero) return;
+      // A hidden icon list can still report old item rectangles. They must not
+      // make invisible icons block the pond's controls.
+      if (lv == IntPtr.Zero || !IsWindowVisible(lv)) { icons = new RECT[0]; return; }
       EnsureRemote(lv);
       if (proc == IntPtr.Zero || remote == IntPtr.Zero) return;
       int count = (int)SendMessage(lv, LVM_GETITEMCOUNT, IntPtr.Zero, IntPtr.Zero);

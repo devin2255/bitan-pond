@@ -37,13 +37,58 @@ app.whenReady().then(() => setTimeout(async () => {
     startRealInput();
     await pause(1400);
     assert(deskProc && !deskProc.killed && inputLines.some((line) => line.startsWith("ready ")), "Desktop input hook did not start");
+    // Unexpected termination should recover without forcing the user to
+    // switch out of wallpaper mode.
+    const oldInputPid = deskProc.pid;
+    startDeskInput = startRealInput; stopDeskInput = stopRealInput;
+    deskProc.kill();
+    for (let i = 0; i < 40 && (!deskProc || deskProc.pid === oldInputPid); i++) await pause(250);
+    assert(deskProc && deskProc.pid !== oldInputPid, "Desktop input hook did not restart");
     stopRealInput();
+    startDeskInput = () => {}; stopDeskInput = () => {};
     onDeskLine = originalOnDeskLine;
     const inspect = (entry, js) => entry.window.webContents.executeJavaScript(js);
     const state = await Promise.all([first, second].map((entry) => inspect(entry,
       '({width:innerWidth,height:innerHeight,wallpaper:document.body.classList.contains("wallpaper-mode"),fish:Pond.getFishCounts()})')));
     assert(state.every((item) => item.width > 0 && item.height > 0 && item.wallpaper));
     assert.deepEqual(state[0].fish, state[1].fish);
+    for (let i = 0; i < 2; i++) {
+      const entry = [first, second][i];
+      const capture = spawnSync(psExe(), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+        path.join(output, "..", "tools", "capture-wallpaper-window.ps1"), "-Hwnd", hwndOf(entry.window),
+        "-Output", path.join(output, `multiscreen-native-${i}.png`)], { windowsHide: true, timeout: 15000, encoding: "utf8" });
+      assert.equal(capture.status, 0, "Native desktop window capture failed: " + capture.stderr);
+      assert.equal(entry.window.isVisible(), true, "A desktop window is still hidden");
+      const picture = nativeImage.createFromPath(path.join(output, `multiscreen-native-${i}.png`));
+      const size = picture.getSize(), bytes = picture.toBitmap();
+      assert.equal(size.width, entry.rect.width); assert.equal(size.height, entry.rect.height);
+      let lo = 255, hi = 0;
+      for (let y = 0; y < size.height; y += Math.max(1, Math.floor(size.height / 45))) {
+        for (let x = 0; x < size.width; x += Math.max(1, Math.floor(size.width / 55))) {
+          const n = (y * size.width + x) * 4;
+          const brightness = (bytes[n] + bytes[n + 1] + bytes[n + 2]) / 3;
+          lo = Math.min(lo, brightness); hi = Math.max(hi, brightness);
+        }
+      }
+      assert(hi - lo > 24, "Native desktop surface appears blank");
+    }
+    // Exercise the same physical-to-renderer input route used on the desktop,
+    // including both right-side controls on each independently sized screen.
+    const desktopClick = async (entry, selector) => {
+      const point = await inspect(entry, `(() => { const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return {x:(r.left+r.width/2)/innerWidth,y:(r.top+r.height/2)/innerHeight}; })()`);
+      const x = Math.round(entry.rect.x + point.x * entry.rect.width), y = Math.round(entry.rect.y + point.y * entry.rect.height);
+      onDeskLine("down " + x + " " + y + " 0"); onDeskLine("up " + x + " " + y + " 0");
+      await pause(300);
+    };
+    for (const entry of [first, second]) {
+      await desktopClick(entry, "#btn-demo");
+      assert.equal(await inspect(entry, '!document.getElementById("demo-menu").classList.contains("hidden")'), true, "desktop weather/season menu did not open");
+      await desktopClick(entry, "#btn-demo");
+      await desktopClick(entry, "#btn-fish");
+      assert.equal(await inspect(entry, '!document.getElementById("overlay-fish").classList.contains("hidden")'), true, "desktop pond settings did not open");
+      await desktopClick(entry, '[data-close="overlay-fish"]');
+      assert.equal(await inspect(entry, 'document.getElementById("overlay-fish").classList.contains("hidden")'), true);
+    }
     await Promise.all([first, second].map((entry) => inspect(entry,
       'window.__points=[]; document.addEventListener("pointerdown",e=>window.__points.push([e.clientX,e.clientY]),true); true')));
     for (const item of [first, second]) {
