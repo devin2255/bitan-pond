@@ -9,11 +9,6 @@ on:
         description: 'Existing release tag, for example v1.1.3'
         required: true
         type: string
-      diagnoseShortcut:
-        description: 'Run the isolated Windows shortcut diagnostic only'
-        required: false
-        type: boolean
-        default: false
 
 concurrency:
   group: tangli-production-release
@@ -35,14 +30,6 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - name: Diagnose shortcut on Windows runner
-        if: ${{ inputs.diagnoseShortcut }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          npm ci
-          node --test test/installer.test.cjs
-          exit 1
       - name: Check version and install dependencies
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
