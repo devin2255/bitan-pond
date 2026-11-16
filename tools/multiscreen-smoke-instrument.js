@@ -54,10 +54,18 @@ app.whenReady().then(() => setTimeout(async () => {
     assert.deepEqual(state[0].fish, state[1].fish);
     for (let i = 0; i < 2; i++) {
       const entry = [first, second][i];
-      const capture = spawnSync(psExe(), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
-        path.join(output, "..", "tools", "capture-wallpaper-window.ps1"), "-Hwnd", hwndOf(entry.window),
-        "-Output", path.join(output, `multiscreen-native-${i}.png`)], { windowsHide: true, timeout: 15000, encoding: "utf8" });
-      assert.equal(capture.status, 0, "Native desktop window capture failed: " + capture.stderr);
+      // PrintWindow asks the owning UI process to paint; keep Electron's event
+      // loop running while the separate capture process waits for that paint.
+      await new Promise((resolve, reject) => {
+        const capture = spawn(psExe(), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+          path.join(output, "..", "tools", "capture-wallpaper-window.ps1"), "-Hwnd", hwndOf(entry.window),
+          "-Output", path.join(output, `multiscreen-native-${i}.png`)], { windowsHide: true });
+        let error = "";
+        capture.stderr.on("data", (chunk) => { error += chunk.toString(); });
+        const timer = setTimeout(() => { capture.kill(); reject(new Error("Native desktop window capture timed out")); }, 30000);
+        capture.on("error", (cause) => { clearTimeout(timer); reject(cause); });
+        capture.on("close", (code) => { clearTimeout(timer); if (code === 0) resolve(); else reject(new Error("Native desktop window capture failed: " + error)); });
+      });
       assert.equal(entry.window.isVisible(), true, "A desktop window is still hidden");
       const picture = nativeImage.createFromPath(path.join(output, `multiscreen-native-${i}.png`));
       const size = picture.getSize(), bytes = picture.toBitmap();
