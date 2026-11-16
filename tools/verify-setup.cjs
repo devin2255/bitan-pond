@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
+const { readShortcutTarget } = require("./verify-shortcut.cjs");
 
 async function hash(file) {
   const digest = crypto.createHash("sha256");
@@ -33,11 +34,8 @@ async function verifySetup(setup, portable) {
       throw new Error("安装包缺少开始菜单入口或卸载程序");
     }
     if (await hash(installed) !== await hash(portable)) throw new Error("安装包内的程序与发布程序不一致");
-    const ps = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    const query = spawnSync(ps, ["-NoProfile", "-NonInteractive", "-Command",
-      "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:TANGLI_TEST_LINK); [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $s.TargetPath"],
-    { windowsHide: true, encoding: "utf8", env: { ...process.env, TANGLI_TEST_LINK: link } });
-    if (query.status !== 0 || query.stdout.trim().toLowerCase() !== installed.toLowerCase()) throw new Error("开始菜单快捷方式无效");
+    const target = readShortcutTarget(link, root);
+    if (fs.realpathSync.native(target).toLowerCase() !== fs.realpathSync.native(installed).toLowerCase()) throw new Error("开始菜单快捷方式目标不正确");
     const keep = path.join(install, "user data.txt");
     fs.writeFileSync(keep, "keep");
     const removed = run(uninstaller, flags);

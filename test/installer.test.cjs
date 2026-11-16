@@ -6,6 +6,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 const { buildSetup } = require("../tools/build-setup.cjs");
+const { readShortcutTarget } = require("../tools/verify-shortcut.cjs");
 
 test("Windows setup creates a searchable shortcut and uninstalls without removing user files",
   { skip: process.platform !== "win32", timeout: 180000 }, async (t) => {
@@ -31,7 +32,7 @@ test("Windows setup creates a searchable shortcut and uninstalls without removin
         }
       }
     });
-    fs.writeFileSync(source, "class P { static void Main() {} }");
+    fs.writeFileSync(source, 'class P { static void Main() { System.IO.File.WriteAllText(System.Environment.GetEnvironmentVariable("TANGLI_TEST_MARKER"), "started"); } }');
     const csc = path.join(process.env.SystemRoot || "C:\\Windows", "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe");
     const compiled = spawnSync(csc, ["/nologo", "/target:winexe", "/out:" + portable, source], { windowsHide: true, encoding: "utf8" });
     assert.equal(compiled.status, 0, compiled.stderr);
@@ -42,11 +43,14 @@ test("Windows setup creates a searchable shortcut and uninstalls without removin
     assert(fs.existsSync(path.join(install, "tangli-install.marker")));
     assert(fs.existsSync(link));
     const ps = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    const query = spawnSync(ps, ["-NoProfile", "-NonInteractive", "-Command",
-      "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:TANGLI_TEST_LINK); [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $s.TargetPath"],
-    { windowsHide: true, encoding: "utf8", env: { ...process.env, TANGLI_TEST_LINK: link } });
-    assert.equal(query.status, 0, query.stderr);
-    assert.equal(query.stdout.trim().toLowerCase(), path.join(install, "塘里.exe").toLowerCase());
+    const target = readShortcutTarget(link, root);
+    assert.equal(fs.realpathSync.native(target).toLowerCase(), fs.realpathSync.native(path.join(install, "塘里.exe")).toLowerCase());
+    const marker = path.join(root, "shortcut-started.txt");
+    const launch = spawnSync(ps, ["-NoProfile", "-NonInteractive", "-Command",
+      "$ErrorActionPreference='Stop'; Start-Process -FilePath $env:TANGLI_TEST_LINK -WindowStyle Hidden -Wait"],
+    { windowsHide: true, timeout: 30000, encoding: "utf8", env: { ...process.env, TANGLI_TEST_LINK: link, TANGLI_TEST_MARKER: marker } });
+    assert.equal(launch.status, 0, launch.stderr || launch.error?.message);
+    assert.equal(fs.readFileSync(marker, "utf8"), "started", "The installed shortcut should actually launch the program");
     const backup = path.join(install, ".tangli-install-previous.exe");
     fs.writeFileSync(backup, "preserve backup");
     const blocked = run(setup, [...flags, "/D=" + install]);
