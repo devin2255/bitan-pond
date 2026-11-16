@@ -47,6 +47,7 @@ jobs:
           $env:TANGLI_TEST_SCREEN_CAPTURE = '1'
           $env:TANGLI_TEST_NATIVE_INPUT = '1'
           $env:TANGLI_TEST_MODE = '1'
+          & ./tools/raised-solid-diagnostic.ps1
           $env:TANGLI_TEST_RAISED_HOST = 'worker'
           & ./node_modules/.bin/electron.cmd tools/multiscreen-smoke.cjs
           Get-Content -Raw dist/multiscreen-smoke.json
@@ -59,6 +60,7 @@ jobs:
           path: |
             dist/multiscreen-*.png
             dist/multiscreen-native-state.txt
+            dist/raised-solid-screen.png
           if-no-files-found: ignore
       - name: Check version and install dependencies
         env:
