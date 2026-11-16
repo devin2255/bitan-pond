@@ -100,7 +100,11 @@ public static class DeskWp {
     IntPtr progman = FindWindow("Progman", null);
     if (progman == IntPtr.Zero) return IntPtr.Zero;
     IntPtr result;
-    SendMessageTimeout(progman, 0x052C, IntPtr.Zero, IntPtr.Zero, 0, 1000, out result);
+    // The newer raised desktop uses a different activation message; the
+    // legacy WorkerW arrangement retains its original parameters.
+    bool raisedStyle = (GetWindowLongPtr(progman, -20).ToInt64() & 0x00200000L) != 0;
+    SendMessageTimeout(progman, 0x052C, raisedStyle ? new IntPtr(0xD) : IntPtr.Zero,
+      raisedStyle ? new IntPtr(1) : IntPtr.Zero, 0, 1000, out result);
     // Modern Windows 11 hosts the icon view and the wallpaper WorkerW as
     // children of Progman. A separate layered child must sit between them.
     if (IsRaisedDesktop(progman)) return progman;
@@ -164,6 +168,10 @@ public static class DeskWp {
     // windows above the system's static wallpaper WorkerW.
     IntPtr after = IsRaisedDesktop(parent) ? FindWindowEx(parent, IntPtr.Zero, "SHELLDLL_DefView", null) : new IntPtr(1);
     if (!SetWindowPos(hwnd, after, pos.x, pos.y, width, height, 0x0010 | 0x0020 | 0x0040)) return "ERR position";
+    if (IsRaisedDesktop(parent)) {
+      IntPtr background = FindWindowEx(parent, IntPtr.Zero, "WorkerW", null);
+      if (background != IntPtr.Zero) SetWindowPos(background, new IntPtr(1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);
+    }
     ShowWindow(hwnd, 8);
     RECT actual;
     if (!GetWindowRect(hwnd, out actual)) return "ERR bounds";
@@ -192,18 +200,17 @@ public static class DeskWp {
     bool raised = IsRaisedDesktop(parent);
     if (raised) ex2 |= 0x00080000L; // WS_EX_LAYERED on the raised desktop
     SetWindowLongPtr(hwnd, -20, new IntPtr(ex2));
+    if (raised && !SetLayeredWindowAttributes(hwnd, 0, 255, 0x2)) {
+      SetWindowLongPtr(hwnd, -16, new IntPtr(style));
+      SetWindowLongPtr(hwnd, -20, new IntPtr(ex));
+      return "ERR layered";
+    }
     SetParent(hwnd, parent);
     IntPtr now = GetAncestor(hwnd, 1);
     if (now != parent) {
       SetWindowLongPtr(hwnd, -16, new IntPtr(style));
       SetWindowLongPtr(hwnd, -20, new IntPtr(ex));
       return "ERR parent style=" + style + " ex=" + ex + " now=" + now.ToInt64();
-    }
-    if (raised && !SetLayeredWindowAttributes(hwnd, 0, 255, 0x2)) {
-      SetParent(hwnd, IntPtr.Zero);
-      SetWindowLongPtr(hwnd, -16, new IntPtr(style));
-      SetWindowLongPtr(hwnd, -20, new IntPtr(ex));
-      return "ERR layered";
     }
     string result = Place(hwnd, parent, left, top, width, height);
     if (result.StartsWith("ERR")) {

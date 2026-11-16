@@ -61,11 +61,6 @@ app.whenReady().then(() => setTimeout(async () => {
       capture.on("error", (cause) => { clearTimeout(timer); reject(cause); });
       capture.on("close", (code) => { clearTimeout(timer); if (code === 0) resolve(); else reject(new Error("Native capture failed: " + error)); });
     });
-    // This deliberately captures the test machine's whole screen only when
-    // opted in; regular developer runs do not capture unrelated applications.
-    if (process.env.TANGLI_TEST_SCREEN_CAPTURE === "1") {
-      await captureProcess("capture-test-screen.ps1", ["-Output", path.join(output, "multiscreen-screen.png")]);
-    }
     const surfaceRanges = [];
     for (let i = 0; i < 2; i++) {
       const entry = [first, second][i];
@@ -88,6 +83,11 @@ app.whenReady().then(() => setTimeout(async () => {
       }
       surfaceRanges.push({ index: i, range: hi - lo });
     }
+    // This deliberately captures the test machine's whole screen only when
+    // opted in; regular developer runs do not capture unrelated applications.
+    if (process.env.TANGLI_TEST_SCREEN_CAPTURE === "1") {
+      await captureProcess("capture-test-screen.ps1", ["-Output", path.join(output, "multiscreen-screen.png")]);
+    }
     for (const surface of surfaceRanges) assert(surface.range > 24, `Native desktop surface ${surface.index} appears blank (${surface.range})`);
     // Exercise the same physical-to-renderer input route used on the desktop,
     // including both right-side controls on each independently sized screen.
@@ -105,6 +105,31 @@ app.whenReady().then(() => setTimeout(async () => {
       assert.equal(await inspect(entry, '!document.getElementById("overlay-fish").classList.contains("hidden")'), true, "desktop pond settings did not open");
       await desktopClick(entry, '[data-close="overlay-fish"]');
       assert.equal(await inspect(entry, 'document.getElementById("overlay-fish").classList.contains("hidden")'), true);
+    }
+    // An isolated CI desktop can also deliver genuine Windows mouse events;
+    // this checks the low-level hook rather than just its JavaScript route.
+    if (process.env.TANGLI_TEST_NATIVE_INPUT === "1") {
+      startDeskInput = startRealInput; stopDeskInput = stopRealInput;
+      onDeskLine = (line) => { inputLines.push(line); originalOnDeskLine(line); };
+      const count = inputLines.length;
+      startRealInput();
+      for (let i = 0; i < 30 && !inputLines.slice(count).some((line) => line.startsWith("ready ")); i++) await pause(200);
+      assert(inputLines.slice(count).some((line) => line.startsWith("ready ")), "Native hook is not ready");
+      const physicalClick = async (entry, selector) => {
+        const point = await inspect(entry, `(() => { const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return {x:(r.left+r.width/2)/innerWidth,y:(r.top+r.height/2)/innerHeight}; })()`);
+        const x = Math.round(entry.rect.x + point.x * entry.rect.width), y = Math.round(entry.rect.y + point.y * entry.rect.height);
+        await captureProcess("native-test-click.ps1", ["-X", String(x), "-Y", String(y)]);
+        await pause(300);
+      };
+      for (const entry of [first, second]) {
+        await physicalClick(entry, "#btn-demo");
+        assert.equal(await inspect(entry, '!document.getElementById("demo-menu").classList.contains("hidden")'), true, "A real desktop click did not open the season menu");
+        await desktopClick(entry, "#btn-demo");
+        await physicalClick(entry, "#btn-fish");
+        assert.equal(await inspect(entry, '!document.getElementById("overlay-fish").classList.contains("hidden")'), true, "A real desktop click did not open pond settings");
+        await desktopClick(entry, '[data-close="overlay-fish"]');
+      }
+      stopRealInput(); startDeskInput = () => {}; stopDeskInput = () => {}; onDeskLine = originalOnDeskLine;
     }
     await Promise.all([first, second].map((entry) => inspect(entry,
       'window.__points=[]; document.addEventListener("pointerdown",e=>window.__points.push([e.clientX,e.clientY]),true); true')));
