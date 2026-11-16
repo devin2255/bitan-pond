@@ -9,6 +9,11 @@ on:
         description: 'Existing release tag, for example v1.1.3'
         required: true
         type: string
+      diagnoseShortcut:
+        description: 'Run the isolated Windows shortcut diagnostic only'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: tangli-production-release
@@ -30,6 +35,20 @@ jobs:
         with:
           node-version: '22'
           cache: npm
+      - name: Diagnose shortcut on Windows runner
+        if: ${{ inputs.diagnoseShortcut }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm ci
+          $file = 'test/installer.test.cjs'
+          $test = [IO.File]::ReadAllText($file)
+          $before = '    assert.equal(query.status, 0, query.stderr);'
+          $after = '    console.log("SHORTCUT_DIAGNOSTIC", JSON.stringify({link, installed, linkExists:fs.existsSync(link), status:query.status, stdout:query.stdout, stderr:query.stderr, lnk:fs.readFileSync(link).toString("base64")}));' + "`n" + $before
+          if (-not $test.Contains($before)) { throw 'Diagnostic injection point missing' }
+          [IO.File]::WriteAllText($file, $test.Replace($before, $after), [Text.UTF8Encoding]::new($false))
+          node --test $file
+          exit 1
       - name: Check version and install dependencies
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
