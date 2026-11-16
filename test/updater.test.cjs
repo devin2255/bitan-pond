@@ -9,8 +9,9 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { compareVersions, parseDomesticRelease, checkForUpdate, downloadUpdate } = require("../updater");
 const { createSettings, partURLs } = require("../update-settings");
-const { verifyPrepared } = require("../tools/verify-update-release.cjs");
-const { inspectAssets } = require("../tools/publish-update-release.cjs");
+const { verifyPrepared, equivalentFile } = require("../tools/verify-update-release.cjs");
+const { inspectAssets, waitForRelease, waitForAssets, publish } = require("../tools/publish-update-release.cjs");
+const { chooseRecovery, validateRecovered } = require("../tools/recover-update-build.cjs");
 
 const contents = Buffer.from("MZ test release executable");
 const digest = (data) => crypto.createHash("sha256").update(data).digest("hex");
@@ -26,7 +27,7 @@ function domesticFixture(version = "1.2.0", data = contents) {
     const payload = Buffer.from(JSON.stringify(value));
     return { format: 1, payload: payload.toString("base64"), signature: crypto.sign(null, payload, privateKey).toString("base64") };
   };
-  return { channel, buffers, manifest, sign, envelope: sign(manifest) };
+  return { channel, buffers, manifest, sign, privateKey, envelope: sign(manifest) };
 }
 async function tempRoot(t) {
   const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "tangli-updater-test-"));
@@ -74,6 +75,46 @@ test("only accepts release assets whose names, sizes and hashes match", () => {
   assert.deepEqual(inspectAssets(valid.slice(0, 1), expected), [expected[1]]);
   assert.throws(() => inspectAssets([{ ...valid[0], digest: `sha256:${"0".repeat(64)}` }], expected), /不一致/);
   assert.throws(() => inspectAssets([...valid, { name: "unexpected" }], expected), /未预期/);
+});
+
+test("waits for draft and asset metadata to become visible", async () => {
+  const expected = [{ name: "app.exe", size: 3, sha256: "a".repeat(64) }];
+  let attempts = 0;
+  const draft = await waitForRelease(() => ++attempts >= 3 ? { assets: [] } : null, 4, 1);
+  assert.deepEqual(draft.assets, []);
+  attempts = 0;
+  const uploaded = { ...expected[0], state: "uploaded", digest: `sha256:${expected[0].sha256}` };
+  const ready = await waitForAssets(() => ({ assets: ++attempts >= 3 ? [uploaded] : [] }), expected, ["app.exe"], 4, 1);
+  assert.equal(ready.assets[0].name, "app.exe");
+  await assert.rejects(waitForRelease(() => null, 2, 1), /不可见/);
+});
+
+test("only recovers a complete executable from a partial draft", () => {
+  const asset = { name: "app.exe", size: 3, state: "uploaded", digest: `sha256:${"a".repeat(64)}` };
+  const manifest = { name: "latest.json", size: 5, state: "uploaded", digest: `sha256:${"b".repeat(64)}` };
+  assert.equal(chooseRecovery(null, "app.exe"), null);
+  assert.equal(chooseRecovery({ prerelease: false, assets: [] }, "app.exe"), null);
+  assert.equal(chooseRecovery({ prerelease: false, assets: [manifest] }, "app.exe"), null);
+  assert.deepEqual(chooseRecovery({ prerelease: false, assets: [asset, manifest] }, "app.exe"), { executable: asset, manifest });
+  assert.throws(() => chooseRecovery({ prerelease: false, assets: [asset] }, "app.exe"), /缺少已签名清单/);
+  assert.throws(() => chooseRecovery({ prerelease: false, assets: [{ name: "part-001" }] }, "app.exe"), /缺少完整 EXE/);
+  assert.throws(() => chooseRecovery({ prerelease: false, assets: [{ ...asset, digest: null }, manifest] }, "app.exe"), /校验/);
+});
+
+test("only trusts recovered bytes bound to the signed version", () => {
+  const fixture = domesticFixture();
+  const info = { size: contents.length, sha256: digest(contents) };
+  assert.equal(validateRecovered(fixture.envelope, info, "1.2.0", fixture.channel).version, "1.2.0");
+  assert.throws(() => validateRecovered(fixture.envelope, { ...info, sha256: "0".repeat(64) }, "1.2.0", fixture.channel), /已签名版本/);
+  assert.throws(() => validateRecovered(fixture.envelope, info, "1.3.0", fixture.channel), /已签名版本/);
+  assert.throws(() => validateRecovered({ ...fixture.envelope, signature: Buffer.alloc(64).toString("base64") }, info, "1.2.0", fixture.channel), /签名/);
+});
+
+test("compares text line endings safely without normalizing binary assets", () => {
+  assert.equal(equivalentFile("script.js", Buffer.from("a\r\nb\r\n"), Buffer.from("a\nb\n")), true);
+  assert.equal(equivalentFile("image.png", Buffer.from("a\r\nb"), Buffer.from("a\nb")), false);
+  assert.equal(equivalentFile("script.js", Buffer.from([0xff, 0x0d, 0x0a]), Buffer.from([0xfe, 0x0a])), false);
+  assert.equal(equivalentFile("script.js", Buffer.from("safe"), Buffer.from("other")), false);
 });
 
 test("compares stable numeric versions and never offers a downgrade", () => {
@@ -335,9 +376,15 @@ test("release preparation signs a complete manifest using an external private ke
     repository: "https://github.com/example/pond", legacyBranch: "main", legacyPath: "latest.json",
     mirrors: ["https://mirror.example.com"] };
   const channelFile = path.join(root, "channel.json");
+  const notes = path.join(root, "notes.md"), outputAgain = path.join(root, "out-again");
   await fs.promises.writeFile(channelFile, JSON.stringify(channel));
-  const prepared = spawnSync(process.execPath, [tool, "build", executable, "1.2.0", output, key, "", channelFile], { encoding: "utf8" });
+  await fs.promises.writeFile(notes, "first\r\nsecond\r\n");
+  const prepared = spawnSync(process.execPath, [tool, "build", executable, "1.2.0", output, key, notes, channelFile], { encoding: "utf8" });
   assert.equal(prepared.status, 0, prepared.stderr);
+  await fs.promises.writeFile(notes, "first\nsecond\n");
+  const again = spawnSync(process.execPath, [tool, "build", executable, "1.2.0", outputAgain, key, notes, channelFile], { encoding: "utf8" });
+  assert.equal(again.status, 0, again.stderr);
+  assert.deepEqual(await fs.promises.readFile(path.join(output, "latest.json")), await fs.promises.readFile(path.join(outputAgain, "latest.json")));
   const envelope = JSON.parse(await fs.promises.readFile(path.join(output, "latest.json"), "utf8"));
   const item = parseDomesticRelease(envelope, "1.0.0", channel);
   assert.equal(item.sha256, digest(contents));
@@ -346,6 +393,74 @@ test("release preparation signs a complete manifest using an external private ke
   assert.equal((await verifyPrepared({ executable, directory: output, version: "1.2.0", settings })).sha256, digest(contents));
   await fs.promises.writeFile(path.join(output, "SHA256SUMS.txt"), "wrong checksum\n");
   await assert.rejects(verifyPrepared({ executable, directory: output, version: "1.2.0", settings }), /SHA256SUMS/);
+});
+
+test("resumes a verified draft after delayed visibility and an interrupted upload", async (t) => {
+  const root = await tempRoot(t), fixture = domesticFixture();
+  const config = { repository: "https://github.com/example/pond", legacyBranch: "main", legacyPath: "updates/latest.json",
+    mirrors: ["https://mirror.example.com"], publicKey: fixture.channel.publicKey };
+  const key = path.join(root, "private.pem"), executable = path.join(root, "Tangli-v1.2.0-Windows-x64.exe");
+  const directory = path.join(root, "release"), notesFile = path.join(root, "notes.md");
+  await fs.promises.writeFile(path.join(root, "package.json"), JSON.stringify({ version: "1.2.0" }));
+  await fs.promises.writeFile(path.join(root, "update-channel.json"), JSON.stringify(config));
+  await fs.promises.writeFile(key, fixture.privateKey.export({ type: "pkcs8", format: "pem" }));
+  await fs.promises.writeFile(executable, contents);
+  await fs.promises.writeFile(notesFile, "release notes");
+  const tool = path.resolve(__dirname, "../tools/prepare-domestic-update.cjs");
+  const prepared = spawnSync(process.execPath, [tool, "build", executable, "1.2.0", directory, key, notesFile,
+    path.join(root, "update-channel.json")], { encoding: "utf8" });
+  assert.equal(prepared.status, 0, prepared.stderr);
+  const previous = fixture.sign({ ...fixture.manifest, version: "1.1.0", name: "Tangli-v1.1.0-Windows-x64.exe" });
+  let remote = null, visibility = 0, failOnce = true, legacyBytes = Buffer.from(JSON.stringify(previous) + "\n");
+  const events = [];
+  const execute = (command, args, input) => {
+    if (command === "git") return "same-commit";
+    assert.equal(command, "gh");
+    if (args[0] === "api" && args[1] === "--method") {
+      assert.equal(remote.draft, false, "legacy feed changed before publishing");
+      const request = JSON.parse(input);
+      assert.equal(request.sha, "legacy-sha"); assert.equal(request.branch, "main");
+      legacyBytes = Buffer.from(request.content, "base64"); events.push("legacy");
+      return "{}";
+    }
+    if (args[0] === "api" && args[1].includes("/contents/")) {
+      return JSON.stringify({ sha: "legacy-sha", content: legacyBytes.toString("base64") });
+    }
+    if (args[0] === "api" && args[1].includes("/releases?")) {
+      if (remote && visibility++ < 2) return "[]";
+      return JSON.stringify(remote ? [remote] : []);
+    }
+    if (args[0] === "release" && args[1] === "create") {
+      remote = { tag_name: "v1.2.0", draft: true, prerelease: false, assets: [] }; events.push("create"); return "";
+    }
+    if (args[0] === "release" && args[1] === "upload") {
+      if (failOnce && args.slice(5).some((file) => path.basename(file) === "SHA256SUMS.txt")) {
+        failOnce = false; events.push("interrupt"); throw new Error("simulated upload interruption");
+      }
+      for (const file of args.slice(5)) {
+        const bytes = fs.readFileSync(file), name = path.basename(file);
+        events.push(`upload:${name}`);
+        remote.assets.push({ name, state: "uploaded", size: bytes.length, digest: `sha256:${digest(bytes)}` });
+      }
+      return "";
+    }
+    if (args[0] === "release" && args[1] === "edit") {
+      assert.equal(remote.assets.length, 4); remote.draft = false; events.push("publish"); return "";
+    }
+    throw new Error(`Unexpected command: ${args.join(" ")}`);
+  };
+  const options = { executable, directory, unpackedAsar: "unused", notesFile, version: "1.2.0", root,
+    adapters: { run: execute, verifyEmbedded: () => {}, pollDelayMs: 1 } };
+  await assert.rejects(publish(options), /simulated upload interruption/);
+  assert.equal(remote.draft, true);
+  assert.deepEqual(remote.assets.map((asset) => asset.name), ["latest.json", "Tangli-v1.2.0-Windows-x64.exe"]);
+  await publish(options);
+  assert.deepEqual(events.slice(0, 3), ["create", "upload:latest.json", "upload:Tangli-v1.2.0-Windows-x64.exe"]);
+  assert.deepEqual(events.slice(-2), ["publish", "legacy"]);
+  assert.equal(JSON.parse(Buffer.from(JSON.parse(legacyBytes).payload, "base64")).version, "1.2.0");
+  const completed = [...events];
+  await publish(options);
+  assert.deepEqual(events, completed);
 });
 
 test("portable replacement keeps the old file when validation fails", { skip: process.platform !== "win32" }, async (t) => {

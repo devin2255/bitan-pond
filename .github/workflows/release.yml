@@ -60,6 +60,14 @@ jobs:
           "TANGLI_RELEASE_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "TANGLI_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "TANGLI_RELEASE_NOTES=$notes" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Recover any existing release executable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          node tools/recover-update-build.cjs $env:TANGLI_EXE $env:TANGLI_VERSION
       - name: Sign and verify release assets
         env:
           TANGLI_SIGNING_KEY: ${{ secrets.TANGLI_UPDATE_SIGNING_KEY }}

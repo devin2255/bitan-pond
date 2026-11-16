@@ -16,6 +16,12 @@ app.whenReady().then(async () => {
       if (process.argv.includes("--no-github") && /^https:\/\/(?:(?:api\.)?github\.com|raw\.githubusercontent\.com)\//.test(url)) {
         return Promise.reject(new Error("GitHub deliberately disabled for smoke test"));
       }
+      if (process.argv.includes("--release-only") && url.includes("raw.githubusercontent.com/")) {
+        return Promise.reject(new Error("Legacy feed deliberately disabled for smoke test"));
+      }
+      if (process.argv.includes("--official-only") && !url.startsWith("https://github.com/")) {
+        return Promise.reject(new Error("Mirror deliberately disabled for smoke test"));
+      }
       return net.fetch(url, options);
     };
     const release = await checkForUpdate(fetch, process.env.TANGLI_SMOKE_CURRENT || "0.0.0");
@@ -30,7 +36,7 @@ app.whenReady().then(async () => {
       } });
     }
     fs.writeFileSync(output, JSON.stringify({ ok: true, version: release.version, downloaded: !!downloaded,
-      source: release.parts ? "signed-mirror" : "github", sha256: release.sha256, requests }));
+      source: release.signedEnvelope ? "signed" : "github", sha256: release.sha256, requests }));
     if (downloaded) {
       await fs.promises.unlink(downloaded.file);
       await fs.promises.rmdir(downloaded.dir);

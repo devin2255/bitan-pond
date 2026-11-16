@@ -51,7 +51,7 @@ async function build(file, version, out, keyFile, notesFile, channelFile = path.
   const channel = createSettings(JSON.parse(await fs.promises.readFile(channelFile, "utf8")));
   const publicKey = crypto.createPublicKey(key).export({ format: "pem", type: "spki" });
   if (channel.publicKey !== publicKey) throw new Error("签名私钥与应用内的公钥不匹配");
-  const notes = notesFile ? (await fs.promises.readFile(notesFile, "utf8")).slice(0, 1200) : "";
+  const notes = notesFile ? (await fs.promises.readFile(notesFile, "utf8")).replace(/\r\n/g, "\n").slice(0, 1200) : "";
   await fs.promises.mkdir(out); // Fail rather than overwrite a previous release.
   const source = await fs.promises.open(file, "r");
   const whole = crypto.createHash("sha256"), parts = [];

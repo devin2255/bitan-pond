@@ -2,6 +2,7 @@
 
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const asar = require("@electron/asar");
@@ -38,20 +39,49 @@ async function verifyPrepared({ executable, directory, version, settings }) {
   return release;
 }
 
+function equivalentFile(name, left, right) {
+  if (left.equals(right)) return true;
+  if (!/\.(?:js|json|ps1|cs|html|css|txt|md|svg|yml|xml)$/i.test(name)) return false;
+  try {
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    return decoder.decode(left).replace(/\r\n/g, "\n") === decoder.decode(right).replace(/\r\n/g, "\n");
+  } catch (_) { return false; }
+}
+
 function verifyEmbedded({ executable, unpackedAsar, version, repoRoot }) {
-  // Compare the app.asar actually inside the portable EXE with the build output,
-  // then check its version and updater sources before signing a release.
+  // Check the app.asar actually inside the portable EXE, including every file.
+  // A recovered CI build can differ from a local checkout only in line endings.
   const result = spawnSync(require("7zip-bin").path7za, ["x", "-so", executable, "resources/app.asar"],
     { encoding: null, maxBuffer: 512 * 1024 * 1024, timeout: 180000, windowsHide: true });
   if (result.error || result.status !== 0 || !result.stdout) throw new Error("无法检查 EXE 中的应用内容");
-  const hash = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
-  if (hash(result.stdout) !== hash(fs.readFileSync(unpackedAsar))) throw new Error("EXE 内容与当前构建输出不一致");
-  const packageData = JSON.parse(asar.extractFile(unpackedAsar, "package.json").toString("utf8"));
-  if (packageData.version !== version) throw new Error("EXE 内部版本与发布版本不一致");
-  for (const file of ["main.js", "updater.js", "update-feed.js", "update-settings.js", "update-channel.json", "portable-update.ps1"]) {
-    if (!asar.extractFile(unpackedAsar, file).equals(fs.readFileSync(path.join(repoRoot, file)))) {
-      throw new Error(`EXE 中的 ${file} 与当前源代码不一致`);
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "tangli-verify-asar-"));
+  const embedded = path.join(temp, "app.asar");
+  try {
+    fs.writeFileSync(embedded, result.stdout, { flag: "wx" });
+    const files = (archive) => asar.listPackage(archive).map((entry) => entry.replace(/^[/\\]+/, ""))
+      .filter((entry) => {
+        const stat = asar.statFile(archive, entry);
+        if (stat.link) throw new Error("应用包包含未预期的链接");
+        return !stat.files;
+      }).map((entry) => entry.replace(/\\/g, "/")).sort();
+    const actualFiles = files(embedded), expectedFiles = files(unpackedAsar);
+    if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) throw new Error("EXE 文件清单与当前构建输出不一致");
+    for (const file of actualFiles) {
+      const archivePath = file.replace(/\//g, path.sep);
+      if (!equivalentFile(file, asar.extractFile(embedded, archivePath), asar.extractFile(unpackedAsar, archivePath))) {
+        throw new Error(`EXE 中的 ${file} 与当前构建输出不一致`);
+      }
     }
+    const packageData = JSON.parse(asar.extractFile(embedded, "package.json").toString("utf8"));
+    if (packageData.version !== version) throw new Error("EXE 内部版本与发布版本不一致");
+    for (const file of ["main.js", "updater.js", "update-feed.js", "update-settings.js", "update-channel.json", "portable-update.ps1"]) {
+      if (!equivalentFile(file, asar.extractFile(embedded, file), fs.readFileSync(path.join(repoRoot, file)))) {
+        throw new Error(`EXE 中的 ${file} 与当前源代码不一致`);
+      }
+    }
+  } finally {
+    try { fs.unlinkSync(embedded); } catch (_) { /* Temporary file will be cleaned by the OS. */ }
+    try { fs.rmdirSync(temp); } catch (_) { /* Temporary directory will be cleaned by the OS. */ }
   }
 }
 
@@ -70,4 +100,4 @@ async function main() {
 }
 
 if (require.main === module) main().catch((error) => { console.error(error.message); process.exitCode = 1; });
-module.exports = { verifyPrepared, verifyEmbedded };
+module.exports = { verifyPrepared, verifyEmbedded, equivalentFile };
