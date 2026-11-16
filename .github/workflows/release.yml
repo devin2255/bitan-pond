@@ -43,8 +43,11 @@ jobs:
           npm ci
           $file = 'test/installer.test.cjs'
           $test = [IO.File]::ReadAllText($file)
+          $test = $test.Replace('    const ps = path.join(', '    const queryLink = path.join(root, "shortcut-check.lnk"); fs.copyFileSync(link, queryLink);' + "`n" + '    const ps = path.join(')
+          $test = $test.Replace('TANGLI_TEST_LINK: link', 'TANGLI_TEST_LINK: queryLink')
+          $test = $test.Replace('query.stdout.trim().toLowerCase(), path.join(install, "塘里.exe").toLowerCase()', 'fs.realpathSync.native(query.stdout.trim()).toLowerCase(), fs.realpathSync.native(path.join(install, "塘里.exe")).toLowerCase()')
           $before = '    assert.equal(query.status, 0, query.stderr);'
-          $after = '    console.log("SHORTCUT_DIAGNOSTIC", JSON.stringify({link, installed, linkExists:fs.existsSync(link), status:query.status, stdout:query.stdout, stderr:query.stderr, lnk:fs.readFileSync(link).toString("base64")}));' + "`n" + $before
+          $after = '    console.log("SHORTCUT_DIAGNOSTIC", JSON.stringify({link, queryLink, status:query.status, stdout:query.stdout, stderr:query.stderr}));' + "`n" + $before
           if (-not $test.Contains($before)) { throw 'Diagnostic injection point missing' }
           [IO.File]::WriteAllText($file, $test.Replace($before, $after), [Text.UTF8Encoding]::new($false))
           node --test $file
