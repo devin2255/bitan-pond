@@ -669,9 +669,15 @@
       // appearing as a cutout floating above it.
       g.save();
       g.translate(x + r * 0.025, y + r * 0.04);
-      g.rotate(angle); g.filter = "blur(" + Math.max(2, r * 0.045) + "px)";
-      g.fillStyle = "rgba(20,35,22,0.28)";
-      g.beginPath(); g.ellipse(0, 0, r * 0.34 * scale * characterScale, r * 0.72 * scale * characterScale, 0, 0, Math.PI * 2); g.fill();
+      g.rotate(angle);
+      const shadowWidth = r * 0.42 * scale * characterScale;
+      const shadowHeight = r * 0.82 * scale * characterScale;
+      g.scale(shadowWidth, shadowHeight);
+      const shadow = g.createRadialGradient(0, 0, 0.55, 0, 0, 1);
+      shadow.addColorStop(0, "rgba(20,35,22,0.28)");
+      shadow.addColorStop(1, "rgba(20,35,22,0)");
+      g.fillStyle = shadow;
+      g.beginPath(); g.arc(0, 0, 1, 0, Math.PI * 2); g.fill();
       g.restore();
       if (a.mode === "whip" || a.mode === "fall") {
         const reaction = a.mode === "whip" ? ease(clamp((t - 0.41) / 0.07, 0, 1)) : 1;

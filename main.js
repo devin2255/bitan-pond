@@ -10,7 +10,8 @@ const { checkForUpdate, downloadUpdate } = require("./updater");
 const { matchDisplays, targetAt, normalizedPoint } = require("./desktop-layout");
 
 app.setName("塘里");
-app.setPath("userData", path.join(app.getPath("appData"), "bitan-pond"));
+const testUserData = process.env.TANGLI_TEST_MODE === "1" && process.env.TANGLI_TEST_USER_DATA;
+app.setPath("userData", testUserData && path.isAbsolute(testUserData) ? path.resolve(testUserData) : path.join(app.getPath("appData"), "bitan-pond"));
 app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 
 let win = null;
@@ -276,6 +277,39 @@ function markUpdateReady() {
   try { fs.writeFileSync(path.join(os.tmpdir(), `tangli-update-ready-${token}.ok`), "ready", { flag: "wx" }); } catch (_) { /* The updater retains the backup if confirmation fails. */ }
 }
 
+function updateReadyToken() {
+  const argument = process.argv.find((value) => /^--tangli-update-ready=[a-f0-9]{32}$/.test(value));
+  return argument ? argument.slice(argument.indexOf("=") + 1) : null;
+}
+
+function programsDirectory() {
+  if (process.env.TANGLI_TEST_MODE === "1" && process.env.TANGLI_TEST_PROGRAMS && path.isAbsolute(process.env.TANGLI_TEST_PROGRAMS)) {
+    return path.resolve(process.env.TANGLI_TEST_PROGRAMS);
+  }
+  const result = spawnSync(psExe(), ["-NoProfile", "-NonInteractive", "-Command",
+    '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; [Environment]::GetFolderPath("Programs")'],
+  { windowsHide: true, encoding: "utf8", timeout: 8000 });
+  const directory = String(result.stdout || "").trim();
+  if (result.status !== 0 || !path.isAbsolute(directory)) throw new Error("无法定位开始菜单目录");
+  return directory;
+}
+
+function ensureUpdatedPortableShortcut() {
+  const executable = portableExecutable();
+  if (!executable || !updateReadyToken()) return;
+  if (fs.existsSync(path.join(path.dirname(executable), "tangli-install.marker"))) return;
+  try {
+    const directory = programsDirectory();
+    const shortcut = path.join(directory, "塘里 - 便携版.lnk");
+    // Never replace an existing shortcut. The previous portable filename is
+    // updated in place, so a shortcut already pointing to it remains valid.
+    if (fs.existsSync(shortcut)) return;
+    fs.mkdirSync(directory, { recursive: true });
+    if (!shell.writeShortcutLink(shortcut, "create", { target: executable, cwd: path.dirname(executable),
+      description: "塘里桌面池塘（便携版）", icon: executable, iconIndex: 0 })) throw new Error("无法创建开始菜单快捷方式");
+  } catch (error) { logWallpaperError(error); }
+}
+
 async function installDownloadedUpdate() {
   if (!updateDownload || updatePhase !== "ready") return;
   const target = portableExecutable();
@@ -296,7 +330,8 @@ async function installDownloadedUpdate() {
     const token = crypto.randomBytes(16).toString("hex");
     const child = spawn(psExe(), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", helper,
       "-ParentId", String(process.pid), "-Source", updateDownload.file, "-Target", target,
-      "-Sha256", updateDownload.sha256, "-ReadyToken", token],
+      "-Sha256", updateDownload.sha256, "-ReadyToken", token,
+      "-StatusFile", path.join(app.getPath("userData"), "update-status.json")],
     { detached: true, windowsHide: true, stdio: "ignore" });
     await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
     child.unref();
@@ -848,6 +883,12 @@ function createWindow() {
     } else {
       win.maximize();
       win.show();
+    }
+    if (updateReadyToken()) {
+      // Older updaters started the portable launcher hidden. Explicitly show
+      // the new interactive window and add a searchable, non-destructive link.
+      if (!wallpaperOn) { win.show(); win.focus(); }
+      ensureUpdatedPortableShortcut();
     }
     markUpdateReady();
   });

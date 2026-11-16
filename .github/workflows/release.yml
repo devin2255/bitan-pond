@@ -53,12 +53,14 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           $dir = "dist/release-v$env:TANGLI_VERSION"
           $exe = "$dir/Tangli-v$env:TANGLI_VERSION-Windows-x64.exe"
+          $setup = "$dir/Tangli-v$env:TANGLI_VERSION-Setup.exe"
           $notes = "docs/releases/v$env:TANGLI_VERSION.md"
           if (-not (Test-Path -LiteralPath $notes)) { throw "Missing release notes: $notes" }
           npm run dist -- "--config.directories.output=$dir"
           Copy-Item -LiteralPath "$dir/塘里.exe" -Destination $exe
           "TANGLI_RELEASE_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "TANGLI_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TANGLI_SETUP=$setup" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "TANGLI_RELEASE_NOTES=$notes" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Recover any existing release executable
         env:
@@ -68,6 +70,16 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           node tools/recover-update-build.cjs $env:TANGLI_EXE $env:TANGLI_VERSION
+      - name: Build and verify Windows installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          node tools/build-setup.cjs $env:TANGLI_EXE $env:TANGLI_SETUP $env:TANGLI_VERSION
+          node tools/recover-update-build.cjs $env:TANGLI_EXE $env:TANGLI_VERSION $env:TANGLI_SETUP
+          node tools/verify-setup.cjs $env:TANGLI_SETUP $env:TANGLI_EXE
       - name: Sign and verify release assets
         env:
           TANGLI_SIGNING_KEY: ${{ secrets.TANGLI_UPDATE_SIGNING_KEY }}
@@ -79,8 +91,8 @@ jobs:
           $key = Join-Path $env:RUNNER_TEMP 'tangli-update-ed25519.pem'
           [IO.File]::WriteAllText($key, $env:TANGLI_SIGNING_KEY, [Text.UTF8Encoding]::new($false))
           $env:TANGLI_SIGNING_KEY = $null
-          node tools/prepare-domestic-update.cjs build $env:TANGLI_EXE $env:TANGLI_VERSION "$env:TANGLI_RELEASE_DIR/domestic" $key $env:TANGLI_RELEASE_NOTES
-          node tools/verify-update-release.cjs $env:TANGLI_EXE "$env:TANGLI_RELEASE_DIR/domestic" $env:TANGLI_VERSION "$env:TANGLI_RELEASE_DIR/win-unpacked/resources/app.asar"
+          node tools/prepare-domestic-update.cjs build $env:TANGLI_EXE $env:TANGLI_VERSION "$env:TANGLI_RELEASE_DIR/domestic" $key $env:TANGLI_RELEASE_NOTES 'update-channel.json' $env:TANGLI_SETUP
+          node tools/verify-update-release.cjs $env:TANGLI_EXE "$env:TANGLI_RELEASE_DIR/domestic" $env:TANGLI_VERSION "$env:TANGLI_RELEASE_DIR/win-unpacked/resources/app.asar" $env:TANGLI_SETUP
       - name: Publish verified assets and compatibility feed
         env:
           GH_TOKEN: ${{ github.token }}
@@ -88,4 +100,4 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          node tools/publish-update-release.cjs $env:TANGLI_EXE "$env:TANGLI_RELEASE_DIR/domestic" "$env:TANGLI_RELEASE_DIR/win-unpacked/resources/app.asar" $env:TANGLI_VERSION $env:TANGLI_RELEASE_NOTES
+          node tools/publish-update-release.cjs $env:TANGLI_EXE "$env:TANGLI_RELEASE_DIR/domestic" "$env:TANGLI_RELEASE_DIR/win-unpacked/resources/app.asar" $env:TANGLI_VERSION $env:TANGLI_RELEASE_NOTES $env:TANGLI_SETUP

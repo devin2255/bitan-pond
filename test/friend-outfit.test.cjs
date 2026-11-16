@@ -25,7 +25,8 @@ function setup({ initial = {}, fail = () => false, hold = () => false } = {}) {
     addEventListener(type, callback) { (this.listeners[type] ||= []).push(callback); }
   }
   function context2d() {
-    return new Proxy({ globalAlpha: 1, drawImage(image) { if (image.src) drawn.push(image.src); } }, {
+    return new Proxy({ globalAlpha: 1, createRadialGradient() { return { addColorStop() {} }; },
+      drawImage(image) { if (image.src) drawn.push(image.src); } }, {
       get(target, key) { return key in target ? target[key] : () => {}; },
       set(target, key, value) { target[key] = value; return true; },
     });

@@ -52,12 +52,20 @@ function verifyFeed(envelope, publicKey, { parseVersion, compareVersions, maxUpd
     return Object.freeze({ urls: Object.freeze(urls.map(httpsURL)), size: part.size, sha256: part.sha256 });
   });
   if (total !== manifest.size) throw new Error("更新分片大小不匹配");
+  let setup = null;
+  if (manifest.setup != null) {
+    const item = manifest.setup;
+    if (!item || item.name !== `Tangli-v${manifest.version}-Setup.exe` ||
+        !Number.isSafeInteger(item.size) || item.size <= 0 || item.size > maxUpdateBytes ||
+        !/^[a-f0-9]{64}$/.test(item.sha256 || "")) throw new Error("安装包信息无效");
+    setup = Object.freeze({ name: item.name, size: item.size, sha256: item.sha256 });
+  }
   if (compareVersions(manifest.version, currentVersion) <= 0) return null;
   return Object.freeze({
     version: manifest.version, tag: `v${manifest.version}`, name: manifest.name,
     size: manifest.size, sha256: manifest.sha256,
     notes: String(manifest.notes || "").slice(0, 1200).trim(),
-    parts: Object.freeze(parts),
+    parts: Object.freeze(parts), setup,
     // Keep the signed bytes so they can be authenticated again before download.
     signedEnvelope: Object.freeze({ format: 1, payload: envelope.payload, signature: envelope.signature }),
   });

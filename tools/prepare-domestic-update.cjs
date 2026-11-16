@@ -17,7 +17,7 @@ const insideRepo = (file) => {
 
 function usage() {
   throw new Error("用法：node tools/prepare-domestic-update.cjs keygen <仓库外私钥路径>\n" +
-    "或：node tools/prepare-domestic-update.cjs build <EXE路径> <版本号> <输出目录> <私钥路径> [更新说明文件]");
+    "或：node tools/prepare-domestic-update.cjs build <EXE路径> <版本号> <输出目录> <私钥路径> [更新说明文件] [更新配置] [安装包路径]");
 }
 
 async function generateKey(keyFile) {
@@ -38,7 +38,7 @@ async function writeAll(output, buffer, length) {
   }
 }
 
-async function build(file, version, out, keyFile, notesFile, channelFile = path.join(repo, "update-channel.json")) {
+async function build(file, version, out, keyFile, notesFile, channelFile = path.join(repo, "update-channel.json"), setupFile) {
   if (!file || !version || !out || !keyFile) usage();
   if (!parseVersion(version) || version.startsWith("v")) throw new Error("版本号必须是 1.2.3 格式");
   file = path.resolve(file); out = path.resolve(out); keyFile = path.resolve(keyFile);
@@ -77,10 +77,20 @@ async function build(file, version, out, keyFile, notesFile, channelFile = path.
   } finally { await source.close(); }
   const manifest = { format: 1, version, name: `Tangli-v${version}-Windows-x64.exe`, size: info.size,
     sha256: whole.digest("hex"), notes, parts };
+  if (setupFile) {
+    setupFile = path.resolve(setupFile);
+    if (path.basename(setupFile) !== `Tangli-v${version}-Setup.exe`) throw new Error("安装包文件名与版本号不一致");
+    const stat = await fs.promises.stat(setupFile);
+    if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_UPDATE_BYTES) throw new Error("安装包大小无效");
+    const hash = crypto.createHash("sha256");
+    for await (const data of fs.createReadStream(setupFile)) hash.update(data);
+    manifest.setup = { name: path.basename(setupFile), size: stat.size, sha256: hash.digest("hex") };
+  }
   const payload = Buffer.from(JSON.stringify(manifest));
   const envelope = { format: 1, payload: payload.toString("base64"), signature: crypto.sign(null, payload, key).toString("base64") };
   await fs.promises.writeFile(path.join(out, "latest.json"), JSON.stringify(envelope) + "\n", { flag: "wx" });
-  const sums = [`${manifest.sha256}  ${manifest.name}`, ...parts.map((part, index) =>
+  const sums = [`${manifest.sha256}  ${manifest.name}`,
+    ...(manifest.setup ? [`${manifest.setup.sha256}  ${manifest.setup.name}`] : []), ...parts.map((part, index) =>
     `${part.sha256}  ${manifest.name}.part-${String(index + 1).padStart(3, "0")}`)];
   await fs.promises.writeFile(path.join(out, "SHA256SUMS.txt"), sums.join("\n") + "\n", { flag: "wx" });
   console.log(JSON.stringify({ version, size: info.size, sha256: manifest.sha256, parts: parts.length, out }, null, 2));

@@ -395,6 +395,30 @@ test("release preparation signs a complete manifest using an external private ke
   await assert.rejects(verifyPrepared({ executable, directory: output, version: "1.2.0", settings }), /SHA256SUMS/);
 });
 
+test("the installer is bound to the signed manifest and verified with the portable package", async (t) => {
+  const root = await tempRoot(t), fixture = domesticFixture();
+  const executable = path.join(root, "Tangli-v1.2.0-Windows-x64.exe"), setup = path.join(root, "Tangli-v1.2.0-Setup.exe");
+  const key = path.join(root, "private.pem"), channelFile = path.join(root, "channel.json");
+  const notes = path.join(root, "notes.md"), output = path.join(root, "out");
+  const channel = { repository: "https://github.com/example/pond", legacyBranch: "main", legacyPath: "latest.json",
+    mirrors: ["https://mirror.example.com"], publicKey: fixture.channel.publicKey };
+  await fs.promises.writeFile(executable, contents);
+  await fs.promises.writeFile(setup, Buffer.from("MZ signed setup"));
+  await fs.promises.writeFile(key, fixture.privateKey.export({ type: "pkcs8", format: "pem" }));
+  await fs.promises.writeFile(channelFile, JSON.stringify(channel));
+  await fs.promises.writeFile(notes, "notes");
+  const tool = path.resolve(__dirname, "../tools/prepare-domestic-update.cjs");
+  const built = spawnSync(process.execPath, [tool, "build", executable, "1.2.0", output, key, notes, channelFile, setup], { encoding: "utf8" });
+  assert.equal(built.status, 0, built.stderr);
+  const envelope = JSON.parse(await fs.promises.readFile(path.join(output, "latest.json"), "utf8"));
+  const release = parseDomesticRelease(envelope, "1.0.0", channel);
+  assert.equal(release.setup.name, "Tangli-v1.2.0-Setup.exe");
+  assert.equal(release.setup.sha256, digest(Buffer.from("MZ signed setup")));
+  await verifyPrepared({ executable, directory: output, version: "1.2.0", settings: createSettings(channel), setupFile: setup });
+  await fs.promises.writeFile(setup, "altered");
+  await assert.rejects(verifyPrepared({ executable, directory: output, version: "1.2.0", settings: createSettings(channel), setupFile: setup }), /安装包/);
+});
+
 test("resumes a verified draft after delayed visibility and an interrupted upload", async (t) => {
   const root = await tempRoot(t), fixture = domesticFixture();
   const config = { repository: "https://github.com/example/pond", legacyBranch: "main", legacyPath: "updates/latest.json",
@@ -469,16 +493,18 @@ test("portable replacement keeps the old file when validation fails", { skip: pr
   await fs.promises.writeFile(target, "old version");
   const powershell = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
   const helper = path.resolve(__dirname, "..", "portable-update.ps1");
+  const status = path.join(root, "status.json");
   const args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", helper,
-    "-ParentId", "2147483647", "-Source", source, "-Target", target, "-Sha256", "0".repeat(64), "-ReadyToken", "a".repeat(32), "-NoRestart"];
+    "-ParentId", "2147483647", "-Source", source, "-Target", target, "-Sha256", "0".repeat(64), "-ReadyToken", "a".repeat(32), "-StatusFile", status, "-NoRestart"];
   const invalid = spawnSync(powershell, args, { windowsHide: true, timeout: 30000 });
   assert.equal(invalid.status, 1);
+  assert.equal(JSON.parse(await fs.promises.readFile(status, "utf8")).state, "failed");
   assert.equal(await fs.promises.readFile(target, "utf8"), "old version");
   args[args.indexOf("-Sha256") + 1] = digest(contents);
   const valid = spawnSync(powershell, args, { windowsHide: true, timeout: 30000 });
   assert.equal(valid.status, 0, String(valid.stderr));
   assert.deepEqual(await fs.promises.readFile(target), contents);
-  assert.deepEqual((await fs.promises.readdir(root)).sort(), ["new.exe", "old.exe"]);
+  assert.deepEqual((await fs.promises.readdir(root)).sort(), ["new.exe", "old.exe", "status.json"]);
 });
 
 test("portable update restarts the replacement and waits for its readiness signal", { skip: process.platform !== "win32" }, async (t) => {

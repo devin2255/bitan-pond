@@ -15,7 +15,7 @@ async function fileHash(file) {
   return hash.digest("hex");
 }
 
-async function verifyPrepared({ executable, directory, version, settings }) {
+async function verifyPrepared({ executable, directory, version, settings, setupFile }) {
   const envelope = JSON.parse(await fs.promises.readFile(path.join(directory, "latest.json"), "utf8"));
   const release = parseDomesticRelease(envelope, "0.0.0", settings);
   if (!release || release.version !== version || path.basename(executable) !== release.name) throw new Error("签名清单、文件名和版本不一致");
@@ -23,6 +23,12 @@ async function verifyPrepared({ executable, directory, version, settings }) {
   if (exeStat.size !== release.size || await fileHash(executable) !== release.sha256) throw new Error("EXE 与签名清单不一致");
   const combined = crypto.createHash("sha256");
   const sums = [`${release.sha256}  ${release.name}`];
+  if (release.setup) {
+    if (!setupFile || path.basename(setupFile) !== release.setup.name) throw new Error("缺少签名清单中的安装包");
+    const setupStat = await fs.promises.stat(setupFile);
+    if (setupStat.size !== release.setup.size || await fileHash(setupFile) !== release.setup.sha256) throw new Error("安装包与签名清单不一致");
+    sums.push(`${release.setup.sha256}  ${release.setup.name}`);
+  }
   for (let index = 0; index < release.parts.length; index++) {
     const part = release.parts[index], name = `${release.name}.part-${String(index + 1).padStart(3, "0")}`;
     if (JSON.stringify(part.urls) !== JSON.stringify(partURLs(settings, version, name))) throw new Error("分片镜像地址与更新配置不一致");
@@ -86,7 +92,7 @@ function verifyEmbedded({ executable, unpackedAsar, version, repoRoot }) {
 }
 
 async function main() {
-  const [executable, directory, version, unpackedAsar] = process.argv.slice(2);
+  const [executable, directory, version, unpackedAsar, setupFile] = process.argv.slice(2);
   if (!executable || !directory || !version || !unpackedAsar) {
     throw new Error("用法：node tools/verify-update-release.cjs <EXE> <清单目录> <版本> <win-unpacked/resources/app.asar>");
   }
@@ -94,7 +100,7 @@ async function main() {
   const packageVersion = JSON.parse(await fs.promises.readFile(path.join(repoRoot, "package.json"), "utf8")).version;
   if (packageVersion !== version) throw new Error("项目版本与发布版本不一致");
   const settings = createSettings(JSON.parse(await fs.promises.readFile(path.join(repoRoot, "update-channel.json"), "utf8")));
-  const release = await verifyPrepared({ executable, directory, version, settings });
+  const release = await verifyPrepared({ executable, directory, version, settings, setupFile });
   verifyEmbedded({ executable, unpackedAsar, version, repoRoot });
   console.log(JSON.stringify({ ok: true, version, size: release.size, sha256: release.sha256, parts: release.parts.length }));
 }

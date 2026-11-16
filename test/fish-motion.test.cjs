@@ -39,3 +39,19 @@ test("the head remains steady and a travelling tail wave changes sides", () => {
   assert.ok(Math.abs(first + opposite) < 1e-8);
   assert.ok(motion.spread(state, -78, "betta") < 1);
 });
+
+test("lower rendering detail keeps the same fish motion while drawing fewer slices", () => {
+  const state = motion.create(60, 1, () => 0.5);
+  const rects = [];
+  const ctx = { save() {}, translate() {}, rotate() {}, scale() {}, restore() {},
+    drawImage(...args) { rects.push(args); } };
+  const image = { width: 378, height: 168 }, bounds = { x0: -78, x1: 48 };
+  motion.draw(ctx, image, state, "koi", bounds);
+  assert.equal(rects.length, 22);
+  rects.length = 0;
+  motion.draw(ctx, image, state, "koi", bounds, 8);
+  assert.equal(rects.length, 8);
+  assert.equal(rects[0][1], 0);
+  const end = rects[7];
+  assert.ok(Math.abs(end[1] + end[3] - image.width) < 1e-8);
+});

@@ -95,6 +95,9 @@
         </div><small id="friend-outfit-status" role="status" aria-live="polite"></small></fieldset>
       </div>
       <label class="pond-character-setting"><input id="music-rhythm" type="checkbox" /> <span><strong>音乐节奏跟随</strong><small>播放时在本地分析系统声音，不保存或上传音频</small></span></label>
+      <label class="performance-setting" for="performance-mode"><span><strong>画面性能</strong><small>自动根据运行情况调整，保留所有鱼和互动</small></span>
+        <select id="performance-mode"><option value="auto">自动（推荐）</option><option value="quality">画质优先</option><option value="smooth">流畅优先</option></select>
+      </label>
       <p class="sub">设置每种普通鱼的初始数量。保存后立即调整，下次打开也会记住；自己画的锦鲤会保留。</p>
       <div id="fish-counts" class="fish-counts"></div>
       <p id="fish-count-status" class="fish-count-status" role="status" aria-live="polite"></p>
@@ -146,13 +149,14 @@
 
   <script src="seasons.js?v=1"></script>
   <script src="fish-species.js?v=2"></script>
-  <script src="fish-motion.js?v=1"></script>
+  <script src="fish-motion.js?v=performance1"></script>
+  <script src="performance-governor.js?v=1"></script>
   <script src="boss-activity.js?v=whip3"></script>
   <script src="boss-dance.js?v=mermaid5"></script>
   <script src="boss-dance-rig.js?v=friend-prone4"></script>
   <script src="pond-performance.js?v=duet4"></script>
-  <script src="boss-character.js?v=friend-outfit1"></script>
-  <script src="pond.js?v=friend-outfit1"></script>
-  <script src="ui.js?v=update1"></script>
+  <script src="boss-character.js?v=performance1"></script>
+  <script src="pond.js?v=performance1"></script>
+  <script src="ui.js?v=performance1"></script>
 </body>
 </html>

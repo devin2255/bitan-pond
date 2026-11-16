@@ -20,9 +20,12 @@
   let seasonCheckAt = 0;
 
   let canvas, ctx, W = 0, H = 0, dpr = 1;
-  let bg;
+  let bg, tintedWater;
   let surface;
   let last = 0;
+  let lastFrameWork = 0, leafCacheBudget = 0;
+  const performanceKey = "bitan.performance.mode";
+  const governor = PondPerformanceGovernor.create({ cores: navigator.hardwareConcurrency });
   const fishes = [];
   const turtles = [];
   const butterflies = [];
@@ -576,30 +579,30 @@
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = "source-over";
     if (realistic) {
-      ctx.save();
-      ctx.filter = "blur(8px) brightness(0)";
+      // A blurred leaf silhouette never changes. Cache it at half resolution
+      // instead of asking the software renderer to blur it on every frame.
+      const shadow = leafVariant(pc, "shadow", pc.canvas, "blur(4px) brightness(0)", 12);
       ctx.globalAlpha = 0.3 * look.alpha;
-      ctx.drawImage(pc.canvas, x + 6, y + 9);
-      ctx.restore();
+      if (shadow) ctx.drawImage(shadow, x + 6 - 24, y + 9 - 24, pc.canvas.width + 48, pc.canvas.height + 48);
     }
     ctx.globalAlpha = look.alpha * (pc.dryCanvas ? 1 - look.dry : 1);
-    if (!pc.dryCanvas && look.dry > 0.5) ctx.filter = "sepia(0.7) saturate(0.75) brightness(0.85)";
-    ctx.drawImage(pc.canvas, x, y);
-    ctx.filter = "none";
+    const autumn = !pc.dryCanvas && look.dry > 0.5
+      ? leafVariant(pc, "autumn", pc.canvas, "sepia(0.7) saturate(0.75) brightness(0.85)", 0) : null;
+    ctx.drawImage(autumn || pc.canvas, x, y, pc.canvas.width, pc.canvas.height);
     if (pc.dryCanvas && look.dry > 0.01) {
       ctx.globalAlpha = look.alpha * look.dry;
-      if (seasonWeights && seasonWeights.winter > 0.01) {
-        ctx.filter = "saturate(" + (1 - seasonWeights.winter * 0.4).toFixed(2) + ") brightness(" + (1 - seasonWeights.winter * 0.16).toFixed(2) + ")";
-      }
-      ctx.drawImage(pc.dryCanvas, x, y);
-      ctx.filter = "none";
+      const winter = seasonWeights && seasonWeights.winter > 0.5
+        ? leafVariant(pc, "winter", pc.dryCanvas, "saturate(0.6) brightness(0.84)", 0) : null;
+      ctx.drawImage(winter || pc.dryCanvas, x, y, pc.dryCanvas.width, pc.dryCanvas.height);
     }
     // Snow follows visible leaves, rather than the summer-only cover mask.
     if (snowLevel > 0.01) {
       ctx.save();
       ctx.globalAlpha = look.alpha * Math.min(0.6, snowLevel * 0.65);
-      ctx.filter = "grayscale(0.8) brightness(2.25)";
-      ctx.drawImage(look.dry > 0.5 && pc.dryCanvas ? pc.dryCanvas : pc.canvas, x, y);
+      const dry = look.dry > 0.5 && pc.dryCanvas;
+      const source = dry || pc.canvas;
+      const snow = leafVariant(pc, dry ? "snowDry" : "snow", source, "grayscale(0.8) brightness(2.25)", 0);
+      if (snow) ctx.drawImage(snow, x, y, source.width, source.height);
       ctx.restore();
     }
     if (pc.lift > 0.03) {
@@ -610,6 +613,18 @@
       ctx.restore();
     }
     ctx.restore();
+  }
+
+  function leafVariant(pc, name, source, filter, padding) {
+    if (pc[name]) return pc[name];
+    if (leafCacheBudget <= 0) return null;
+    leafCacheBudget--;
+    const c = makeCanvas(source.width / 2 + padding * 2, source.height / 2 + padding * 2);
+    const g = c.getContext("2d");
+    g.filter = filter;
+    g.drawImage(source, padding, padding, source.width / 2, source.height / 2);
+    pc[name] = c;
+    return c;
   }
 
   function drawLeafBlooms(idx) {
@@ -752,15 +767,20 @@
   }
   function randRange(rand, a, b) { return a + (b - a) * rand(); }
 
+  function applyRenderQuality() {
+    dpr = PondPerformanceGovernor.renderScale(W, H, window.devicePixelRatio || 1, governor.profile.maxPixels);
+    const width = Math.floor(W * dpr), height = Math.floor(H * dpr);
+    if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    document.body.classList.toggle("pond-low-power", governor.level > 0);
+  }
+
   function resize() {
-    dpr = Math.min(window.devicePixelRatio || 1, 2);
     W = window.innerWidth;
     H = window.innerHeight;
-    canvas.width = Math.floor(W * dpr);
-    canvas.height = Math.floor(H * dpr);
     canvas.style.width = W + "px";
     canvas.style.height = H + "px";
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    applyRenderQuality();
     VIEW = clamp(W / 1920, 0.6, 1.4) * 0.42;
     bakeBackground();
     groups.forEach((g, i) => {
@@ -800,8 +820,15 @@
     return !!(img && img.complete && img.naturalWidth);
   }
 
+  let photoBakeTimer = null;
   function whenPhoto(img, src) {
-    img.onload = function () { if (W) bakeBackground(); };
+    img.onload = img.onerror = function () {
+      if (!W) return;
+      // Images commonly finish together; construct the scenery once instead
+      // of repeatedly reprocessing the full pond for every asset.
+      clearTimeout(photoBakeTimer);
+      photoBakeTimer = setTimeout(bakeBackground, 120);
+    };
     img.src = src;
   }
 
@@ -1100,6 +1127,7 @@
   }
 
   function bakeBackground() {
+    tintedWater = null;
     bg = document.createElement("canvas");
     bg.width = Math.max(1, W);
     bg.height = Math.max(1, H);
@@ -1112,13 +1140,19 @@
       drawCovered(layoutCanvas.getContext("2d"), bedPhoto, W, H);
       const flowers = paintFlora(buildCover(layoutCanvas));
       cover = coverFromPaint(surface, flowers);
-      buildPondBase();
+      // The realistic water already contains no leaves, so the expensive
+      // inpainting used by the legacy photographic scene is unnecessary.
+      pondBase = null;
       installSoloLeaves();
       blooms = flowers.map((f) => {
         f.leaf = leafAt(f.x, f.y);
         return f;
       });
       realistic = true;
+      tintedWater = makeCanvas(W, H);
+      const water = tintedWater.getContext("2d");
+      water.filter = "hue-rotate(58deg) saturate(1.75) brightness(1.02)";
+      water.drawImage(bg, 0, 0, W, H);
       finishBake();
       return;
     }
@@ -1756,7 +1790,7 @@
   }
 
   function warpDraw(img, f) {
-    PondFishMotion.draw(ctx, img, fishMotion(f), f.species, KOI);
+    PondFishMotion.draw(ctx, img, fishMotion(f), f.species, KOI, governor.profile.fishStrips);
   }
 
   const fishCountsKey = "bitan.fish-counts.v1";
@@ -2471,10 +2505,10 @@
   }
 
   function syncWeatherBits() {
-    const wantDrops = state.effect === "rain" ? 720 : state.effect === "drizzle" ? 120 : 0;
+    const wantDrops = state.effect === "rain" ? governor.profile.rain : state.effect === "drizzle" ? governor.profile.drizzle : 0;
     while (drops.length < wantDrops) { const d = {}; respawnDrop(d, true); drops.push(d); }
     if (drops.length > wantDrops) drops.length = wantDrops;
-    const wantFlakes = state.effect === "snow" ? 520 : 0;
+    const wantFlakes = state.effect === "snow" ? governor.profile.snow : 0;
     while (flakes.length < wantFlakes) { const d = {}; respawnFlake(d, true); flakes.push(d); }
     if (flakes.length > wantFlakes) flakes.length = wantFlakes;
     const wantLeaves = state.effect === "wind" ? 26 : 0;
@@ -3607,11 +3641,13 @@
     for (let y = -s; y < H + s; y += s) {
       for (let x = -s; x < W + s; x += s) ctx.drawImage(tile, x + ox, y + oy);
     }
+    if (governor.profile.causticLayers > 1) {
     const ox2 = ((-t * 14) % s + s) % s;
     const oy2 = ((t * 8) % s + s) % s;
     ctx.globalAlpha = 0.04 * day * clear;
     for (let y = -s; y < H + s; y += s) {
       for (let x = -s; x < W + s; x += s) ctx.drawImage(tile, x + ox2, y + oy2);
+    }
     }
     ctx.restore();
   }
@@ -3622,10 +3658,7 @@
     const src = realistic ? bg : (pondBase || bg);
     if (!src) return;
     if (realistic) {
-      ctx.save();
-      ctx.filter = "hue-rotate(58deg) saturate(1.75) brightness(1.02)";
-      ctx.drawImage(src, 0, 0, W, H);
-      ctx.restore();
+      ctx.drawImage(tintedWater || src, 0, 0, W, H);
       drawWaterSkin(t);
       return;
     }
@@ -4186,7 +4219,7 @@
     ctx.clearRect(0, 0, W, H);
     const moving = leafS > 0.01 && pondBase && leafPieces.length;
     if (bg) {
-      ctx.drawImage(!realistic && moving ? pondBase : bg, 0, 0, W, H);
+      if (!realistic) ctx.drawImage(moving ? pondBase : bg, 0, 0, W, H);
       drawLivingWater(t);
       drawSeasonWater();
     }
@@ -4295,13 +4328,17 @@
   }
 
   function frame(ts) {
+    if (last && ts - last < 1000 / governor.profile.fps - 1) { requestAnimationFrame(frame); return; }
+    const started = performance.now();
     const realDt = Math.max(0, last ? (ts - last) / 1000 : 0.016);
-    const dt = Math.min(0.033, realDt);
-    const musicDt = Math.min(0.1, realDt);
+    if (last && governor.observe(realDt * 1000, lastFrameWork)) applyRenderQuality();
+    const dt = PondPerformanceGovernor.simulationDelta(realDt);
+    const musicDt = dt;
     last = ts;
+    leafCacheBudget = 2;
     const t = ts / 1000;
     updateSeason(dt);
-    if (musicPlaying) { musicConductor.advance(realDt); duetClock.advance(musicDt); }
+    if (musicPlaying) { musicConductor.advance(musicDt); duetClock.advance(musicDt); }
     const rhythm = musicConductor.state();
     const targetTempoFactor = musicPlaying && musicRhythmEnabled && rhythm.synchronized ? clamp(rhythm.tempo / 110, 0.75, 1.4) : 1;
     musicTempoFactor += (targetTempoFactor - musicTempoFactor) * (1 - Math.exp(-1.5 * musicDt));
@@ -4353,6 +4390,7 @@
       tipEl.style.left = mouse.x + "px";
       tipEl.style.top = mouse.y + "px";
     }
+    lastFrameWork = performance.now() - started;
     requestAnimationFrame(frame);
   }
 
@@ -4406,6 +4444,7 @@
   function init(el) {
     canvas = el;
     ctx = canvas.getContext("2d");
+    try { governor.setMode(localStorage.getItem(performanceKey) || "auto"); } catch (_) { governor.setMode("auto"); }
     tipEl = document.getElementById("tip");
     buildWeatherArt();
     resize();
@@ -4455,6 +4494,13 @@
   window.Pond = {
     init,
     feed,
+    getPerformanceMode() { return governor.mode; },
+    getPerformanceStatus() { return { mode: governor.mode, profile: governor.profile.id, scale: dpr }; },
+    setPerformanceMode(mode) {
+      governor.setMode(mode);
+      try { localStorage.setItem(performanceKey, governor.mode); } catch (_) { /* Settings are optional. */ }
+      if (canvas && W && H) applyRenderQuality();
+    },
     bossVisible() { return boss.enabled; },
     setBossVisible(value) { boss.setEnabled(value); if (!value) performers[0].host = null; },
     friendVisible() { return friend.enabled; },

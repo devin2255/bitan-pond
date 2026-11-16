@@ -71,10 +71,10 @@
     return 1 - fan + nearFin;
   }
 
-  function draw(ctx, image, motion, species, bounds) {
+  function draw(ctx, image, motion, species, bounds, stripCount = 22) {
     const iw = image.naturalWidth || image.width, ih = image.naturalHeight || image.height;
     const width = bounds.x1 - bounds.x0, height = width * ih / iw;
-    const strips = 22, stripWidth = width / strips, overlap = 0.45;
+    const strips = clamp(Math.round(Number(stripCount) || 22), 6, 22), stripWidth = width / strips, overlap = 0.45;
     for (let i = 0; i < strips; i++) {
       const a = Math.max(bounds.x0, bounds.x0 + i * stripWidth - overlap);
       const b = Math.min(bounds.x1, bounds.x0 + (i + 1) * stripWidth + overlap);

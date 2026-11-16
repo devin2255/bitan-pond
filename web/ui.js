@@ -371,6 +371,7 @@
     $("boss-visible").checked = Pond.bossVisible();
     $("friend-visible").checked = Pond.friendVisible();
     $("music-rhythm").checked = rhythmEnabled;
+    $("performance-mode").value = Pond.getPerformanceMode();
     document.querySelectorAll('input[name="boss-outfit"]').forEach((el) => { el.checked = el.value === Pond.bossOutfit(); });
     document.querySelectorAll('input[name="friend-outfit"]').forEach((el) => { el.checked = el.value === Pond.friendOutfit(); });
     $("outfit-status").textContent = "";
@@ -707,6 +708,7 @@
     $("boss-visible").addEventListener("change", () => Pond.setBossVisible($("boss-visible").checked));
     $("friend-visible").addEventListener("change", () => Pond.setFriendVisible($("friend-visible").checked));
     $("music-rhythm").addEventListener("change", () => setRhythmEnabled($("music-rhythm").checked));
+    $("performance-mode").addEventListener("change", () => Pond.setPerformanceMode($("performance-mode").value));
     function bindOutfit(name, statusId, read, apply) {
       const selector = `input[name="${name}"]`;
       document.querySelectorAll(selector).forEach((el) => el.addEventListener("change", async () => {
@@ -864,6 +866,10 @@
         case "bitan.music.rhythm":
           if (rhythmEnabled !== (event.newValue !== "0")) setRhythmEnabled(event.newValue !== "0");
           $("music-rhythm").checked = rhythmEnabled;
+          break;
+        case "bitan.performance.mode":
+          if (Pond.getPerformanceMode() !== (event.newValue || "auto")) Pond.setPerformanceMode(event.newValue || "auto");
+          $("performance-mode").value = Pond.getPerformanceMode();
           break;
         case "bitan.place":
           if (event.newValue) { placeRevision++; place = JSON.parse(event.newValue); applyAtmosphere(); clockTick(); markChips(); }

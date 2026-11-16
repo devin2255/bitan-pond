@@ -229,8 +229,9 @@ function makeCharacter(document, rig = DanceRig, options = {}) {
 }
 
 function makeDrawableCharacter(rigOverride, options) {
-  const makeContext = () => ({ globalAlpha: 1, save() {}, restore() {}, translate() {}, rotate() {},
-    clearRect() {}, drawImage() {}, beginPath() {}, ellipse() {}, stroke() {}, fill() {}, moveTo() {}, lineTo() {},
+  const makeContext = () => ({ globalAlpha: 1, save() {}, restore() {}, translate() {}, rotate() {}, scale() {},
+    createRadialGradient() { return { addColorStop() {} }; },
+    clearRect() {}, drawImage() {}, beginPath() {}, arc() {}, ellipse() {}, stroke() {}, fill() {}, moveTo() {}, lineTo() {},
     bezierCurveTo() {}, quadraticCurveTo() {} });
   const bufferDraws = [];
   const document = { createElement() { const ctx = makeContext(); ctx.drawImage = (...args) => bufferDraws.push(args);

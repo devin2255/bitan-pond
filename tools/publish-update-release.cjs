@@ -59,12 +59,12 @@ async function assetInfo(file) {
   return { file, name: path.basename(file), size: (await fs.promises.stat(file)).size, sha256: hash.digest("hex") };
 }
 
-async function publish({ executable, directory, unpackedAsar, notesFile, version, dryRun = false,
+async function publish({ executable, directory, unpackedAsar, notesFile, version, setupFile, dryRun = false,
   root = path.resolve(__dirname, ".."), adapters = {} }) {
   const pkg = JSON.parse(await fs.promises.readFile(path.join(root, "package.json"), "utf8"));
   const settings = createSettings(JSON.parse(await fs.promises.readFile(path.join(root, "update-channel.json"), "utf8")));
   if (pkg.version !== version) throw new Error("项目版本与发布版本不一致");
-  const release = await verifyPrepared({ executable, directory, version, settings });
+  const release = await verifyPrepared({ executable, directory, version, settings, setupFile });
   (adapters.verifyEmbedded || verifyEmbedded)({ executable, unpackedAsar, version, repoRoot: root });
   await fs.promises.access(notesFile, fs.constants.R_OK);
   const execute = adapters.run || run, pollDelay = adapters.pollDelayMs ?? 1500;
@@ -89,7 +89,7 @@ async function publish({ executable, directory, unpackedAsar, notesFile, version
   };
   if (newerReleaseExists()) throw new Error("已有更高的正式发行版，拒绝回退");
   inspectLegacy();
-  const files = [executable, path.join(directory, "latest.json"), path.join(directory, "SHA256SUMS.txt"),
+  const files = [executable, ...(release.setup ? [setupFile] : []), path.join(directory, "latest.json"), path.join(directory, "SHA256SUMS.txt"),
     ...release.parts.map((_, index) => path.join(directory, `${release.name}.part-${String(index + 1).padStart(3, "0")}`))];
   const expected = await Promise.all(files.map(assetInfo));
   let remote = findRelease();
@@ -138,11 +138,11 @@ async function publish({ executable, directory, unpackedAsar, notesFile, version
 
 async function main() {
   const args = process.argv.slice(2), dryRun = args.includes("--dry-run");
-  const [executable, directory, unpackedAsar, version, notesFile] = args.filter((arg) => arg !== "--dry-run");
+  const [executable, directory, unpackedAsar, version, notesFile, setupFile] = args.filter((arg) => arg !== "--dry-run");
   if (!executable || !directory || !unpackedAsar || !version || !notesFile) {
     throw new Error("用法：node tools/publish-update-release.cjs <EXE> <清单目录> <app.asar> <版本> <说明文件>");
   }
-  await publish({ executable, directory, unpackedAsar, version, notesFile, dryRun });
+  await publish({ executable, directory, unpackedAsar, version, notesFile, setupFile, dryRun });
 }
 
 if (require.main === module) main().catch((error) => { console.error(error.message); process.exitCode = 1; });

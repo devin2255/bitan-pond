@@ -38,29 +38,51 @@ function gh(args) {
 }
 
 async function main() {
-  const [executable, version] = process.argv.slice(2);
+  const [executable, version, setupFile] = process.argv.slice(2);
   if (!executable || !version || !parseVersion(version) || version.startsWith("v") ||
       path.basename(executable) !== `Tangli-v${version}-Windows-x64.exe`) throw new Error("恢复参数或版本无效");
   const root = path.resolve(__dirname, "..");
   const settings = createSettings(JSON.parse(await fs.promises.readFile(path.join(root, "update-channel.json"), "utf8")));
   const slug = new URL(settings.repository).pathname.slice(1), tag = `v${version}`;
   const releases = JSON.parse(gh(["api", `repos/${slug}/releases?per_page=100`]));
-  const assets = chooseRecovery(releases.find((item) => item.tag_name === tag), path.basename(executable));
+  const remoteRelease = releases.find((item) => item.tag_name === tag);
+  const assets = chooseRecovery(remoteRelease, path.basename(executable));
   if (!assets) { console.log(JSON.stringify({ recovered: false })); return; }
   const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "tangli-release-recover-"));
   const downloaded = path.join(temp, assets.executable.name), manifestFile = path.join(temp, assets.manifest.name);
+  let restoredSetup = null;
   try {
     gh(["release", "download", tag, "--repo", slug, "--pattern", assets.executable.name, "--pattern", assets.manifest.name, "--dir", temp]);
     const info = await assetInfo(downloaded);
     const manifestInfo = await assetInfo(manifestFile);
     if (info.size !== assets.executable.size || `sha256:${info.sha256}` !== assets.executable.digest ||
         manifestInfo.size !== assets.manifest.size || `sha256:${manifestInfo.sha256}` !== assets.manifest.digest) throw new Error("恢复的附件校验失败");
-    validateRecovered(JSON.parse(await fs.promises.readFile(manifestFile, "utf8")), info, version, settings);
+    const signed = validateRecovered(JSON.parse(await fs.promises.readFile(manifestFile, "utf8")), info, version, settings);
     await fs.promises.copyFile(downloaded, executable);
+    if (setupFile) {
+      if (!signed.setup || path.basename(setupFile) !== signed.setup.name) throw new Error("恢复的发行清单缺少安装包信息");
+      const setupAsset = remoteRelease.assets.find((asset) => asset.name === signed.setup.name);
+      if (setupAsset) {
+        if (setupAsset.state !== "uploaded" || setupAsset.size !== signed.setup.size ||
+            setupAsset.digest !== `sha256:${signed.setup.sha256}`) throw new Error("远端安装包与签名清单不一致");
+        gh(["release", "download", tag, "--repo", slug, "--pattern", signed.setup.name, "--dir", temp]);
+        restoredSetup = path.join(temp, signed.setup.name);
+        const setupInfo = await assetInfo(restoredSetup);
+        if (setupInfo.size !== signed.setup.size || setupInfo.sha256 !== signed.setup.sha256) throw new Error("恢复的安装包校验失败");
+        await fs.promises.copyFile(restoredSetup, setupFile);
+        await fs.promises.unlink(restoredSetup);
+      } else {
+        const setupInfo = await assetInfo(setupFile);
+        if (setupInfo.size !== signed.setup.size || setupInfo.sha256 !== signed.setup.sha256) {
+          throw new Error("草稿缺少签名清单对应的安装包，无法安全恢复");
+        }
+      }
+    }
     console.log(JSON.stringify({ recovered: true, sha256: info.sha256 }));
   } finally {
     await fs.promises.unlink(downloaded).catch(() => {});
     await fs.promises.unlink(manifestFile).catch(() => {});
+    if (restoredSetup) await fs.promises.unlink(restoredSetup).catch(() => {});
     await fs.promises.rmdir(temp).catch(() => {});
   }
 }
