@@ -89,7 +89,6 @@ app.whenReady().then(() => setTimeout(async () => {
       await captureProcess("capture-test-screen.ps1", ["-Output", path.join(output, "multiscreen-screen.png"),
         "-State", path.join(output, "multiscreen-native-state.txt")]);
     }
-    for (const surface of surfaceRanges) assert(surface.range > 24, `Native desktop surface ${surface.index} appears blank (${surface.range})`);
     // Exercise the same physical-to-renderer input route used on the desktop,
     // including both right-side controls on each independently sized screen.
     const desktopClick = async (entry, selector) => {
@@ -132,6 +131,7 @@ app.whenReady().then(() => setTimeout(async () => {
       }
       stopRealInput(); startDeskInput = () => {}; stopDeskInput = () => {}; onDeskLine = originalOnDeskLine;
     }
+    for (const surface of surfaceRanges) assert(surface.range > 24, `Native desktop surface ${surface.index} appears blank (${surface.range})`);
     await Promise.all([first, second].map((entry) => inspect(entry,
       'window.__points=[]; document.addEventListener("pointerdown",e=>window.__points.push([e.clientX,e.clientY]),true); true')));
     for (const item of [first, second]) {

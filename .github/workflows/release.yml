@@ -48,7 +48,6 @@ jobs:
           $env:TANGLI_TEST_NATIVE_INPUT = '1'
           $env:TANGLI_TEST_MODE = '1'
           & ./tools/raised-solid-diagnostic.ps1
-          $env:TANGLI_TEST_RAISED_HOST = 'worker'
           & ./node_modules/.bin/electron.cmd tools/multiscreen-smoke.cjs
           Get-Content -Raw dist/multiscreen-smoke.json
           if (-not (Get-Content -Raw dist/multiscreen-smoke.json | ConvertFrom-Json).ok) { throw 'Desktop integration test failed' }
