@@ -19,7 +19,7 @@ app.whenReady().then(() => setTimeout(async () => {
     startRhythmCapture = () => {}; stopRhythmCapture = () => {};
     musicState = { available: false, playing: false };
     const physical = (await getWallpaperDisplays())[0].rect;
-    assert(physical.width >= 1800 && physical.height >= 900, "Integration test requires a screen at least 1800 x 900");
+    assert(physical.width >= 800 && physical.height >= 600, "Integration test requires a screen at least 800 x 600");
     const split = Math.round(physical.width * 0.625);
     const make = (id, rect) => ({ id, rect, bounds: screen.screenToDipRect(null, rect) });
     let displays = [
