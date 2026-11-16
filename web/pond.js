@@ -1952,6 +1952,35 @@
     saved.forEach((item) => addCustom(item, false));
   }
 
+  // Keep the independently animated ponds in sync without rewriting storage
+  // or resetting fish that have already been swimming on this screen.
+  function syncCustoms(saved) {
+    if (!Array.isArray(saved)) return;
+    const valid = saved.filter((item) => item && Number.isSafeInteger(Number(item.num)) && Number(item.num) > 0 &&
+      typeof item.src === "string" && item.src.startsWith("data:image/"));
+    const byNumber = new Map(valid.map((item) => [Number(item.num), item]));
+    for (let i = fishes.length - 1; i >= 0; i--) {
+      const fish = fishes[i];
+      if (!fish.custom) continue;
+      const item = byNumber.get(fish.num);
+      if (!item || fish.src !== item.src || fish.name !== cleanName(item.name) || fish.scale !== clamp(Number(item.scale) || 1, 0.4, 2.2)) {
+        if (hoverFish === fish) hoverFish = null;
+        fishes.splice(i, 1);
+      }
+    }
+    for (const item of valid) {
+      const num = Number(item.num);
+      if (fishes.some((fish) => fish.custom && fish.num === num)) continue;
+      const collision = fishes.find((fish) => !fish.custom && fish.num === num);
+      if (collision) {
+        while (byNumber.has(nextNum) || fishes.some((fish) => fish.num === nextNum)) nextNum++;
+        collision.num = nextNum++;
+      }
+      addCustom(item, false);
+    }
+    if (onRoster) onRoster();
+  }
+
   function removeCustom(num) {
     const idx = fishes.findIndex((f) => f.custom && f.num === num);
     if (idx < 0) return;
@@ -4493,6 +4522,7 @@
       state.clockAt = 0;
     },
     addCustom(def) { return addCustom(def, true); },
+    syncCustoms,
     getFishCounts() { return Object.assign({}, configuredFishCounts); },
     setFishCounts,
     fishThumbnail,

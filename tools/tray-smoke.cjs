@@ -18,7 +18,19 @@ app.whenReady().then(() => {
     try {
       const state = () => ({ alive: !!tray && !tray.isDestroyed(), wallpaperOn, fullscreenFallback });
       const before = state();
-      runPs = async () => "OK style=123 ex=0";
+      runPs = async (args) => {
+        const action = args[args.indexOf("-Action") + 1];
+        if (action === "monitors") {
+          const rect = screen.dipToScreenRect(null, screen.getPrimaryDisplay().bounds);
+          return "OK displays=" + [rect.x, rect.y, rect.width, rect.height].join(",");
+        }
+        if (action === "attach" || action === "move") {
+          const value = (name) => args[args.indexOf(name) + 1];
+          return "OK style=123 ex=0 x=" + value("-Left") + " y=" + value("-Top") +
+            " w=" + value("-Width") + " h=" + value("-Height");
+        }
+        return "OK detached=1";
+      };
       startDeskInput = () => {}; stopDeskInput = () => {};
       registerWallpaperHotkey = () => {}; unregisterWallpaperHotkey = () => {};
       balloon = () => {}; writePref = () => {};

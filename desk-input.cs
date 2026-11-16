@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -55,6 +56,7 @@ internal static class DeskInput {
   [DllImport("user32.dll")] static extern IntPtr SetTimer(IntPtr hwnd, IntPtr id, uint ms, IntPtr fn);
   [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT pt);
   [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+  [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr hwnd);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr hwnd, StringBuilder sb, int max);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string name);
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr lParam);
@@ -72,6 +74,8 @@ internal static class DeskInput {
   static IntPtr hook;
   static HookProc keep;
   static IntPtr target;
+  static readonly HashSet<IntPtr> targets = new HashSet<IntPtr>();
+  static readonly List<RECT> screens = new List<RECT>();
   static IntPtr listView;
   static IntPtr proc;
   static IntPtr remote;
@@ -87,6 +91,17 @@ internal static class DeskInput {
     try { SetProcessDpiAwareness(2); } catch { }
     if (args.Length < 2) return 2;
     target = new IntPtr(long.Parse(args[0]));
+    if (args.Length >= 3) {
+      foreach (string item in args[2].Split(';')) {
+        string[] fields = item.Split(',');
+        long hwnd; int x, y, w, h;
+        if (fields.Length != 5 || !long.TryParse(fields[0], out hwnd) || !int.TryParse(fields[1], out x) ||
+            !int.TryParse(fields[2], out y) || !int.TryParse(fields[3], out w) || !int.TryParse(fields[4], out h) || w <= 0 || h <= 0) continue;
+        targets.Add(new IntPtr(hwnd));
+        screens.Add(new RECT { left = x, top = y, right = x + w, bottom = y + h });
+      }
+    }
+    if (screens.Count == 0) return 2;
     int parentPid = int.Parse(args[1]);
     try {
       var parent = Process.GetProcessById(parentPid);
@@ -148,6 +163,7 @@ internal static class DeskInput {
   }
 
   static bool OnDesktop(IntPtr hwnd) {
+    for (IntPtr p = hwnd; p != IntPtr.Zero; p = GetParent(p)) if (targets.Contains(p)) return true;
     string cls = ClassOf(hwnd);
     string root = ClassOf(GetAncestor(hwnd, GA_ROOT));
     if (cls == "SysListView32" || cls == "SHELLDLL_DefView") return root == "Progman" || root == "WorkerW" || root == "";
@@ -244,6 +260,11 @@ internal static class DeskInput {
     return false;
   }
 
+  static bool OnScreen(int x, int y) {
+    foreach (RECT r in screens) if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) return true;
+    return false;
+  }
+
   static void NoteDown(uint msg) {
     if (msg == WM_LBUTTONDOWN) desktopGesture |= 1;
     if (msg == WM_RBUTTONDOWN) desktopGesture |= 2;
@@ -264,7 +285,7 @@ internal static class DeskInput {
     }
     IntPtr under = WindowFromPoint(info.pt);
     bool icon = HitIcon(info.pt.x, info.pt.y);
-    if (!OnDesktop(under) || icon) {
+    if (!OnScreen(info.pt.x, info.pt.y) || !OnDesktop(under) || icon) {
       if (icon && (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN)) NoteDown(msg);
       if (overPond) { overPond = false; Emit("leave"); }
       return CallNextHookEx(hook, nCode, wParam, lParam);

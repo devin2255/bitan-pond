@@ -18,3 +18,9 @@ contextBridge.exposeInMainWorld("systemMusic", {
 contextBridge.exposeInMainWorld("appUpdates", {
   check: () => ipcRenderer.invoke("update:check"),
 });
+
+contextBridge.exposeInMainWorld("scenePreview", {
+  state: () => ipcRenderer.invoke("scene:preview-state"),
+  set: (key, value) => ipcRenderer.send("scene:preview", key, value),
+  onChange: (cb) => ipcRenderer.on("scene:preview", (_event, value) => cb(value)),
+});

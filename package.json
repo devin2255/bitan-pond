@@ -1,13 +1,13 @@
 {
   "name": "bitan-pond",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "description": "塘里：会跟着天气变化的桌面池塘",
   "main": "main.js",
   "author": "local",
   "scripts": {
     "start": "electron .",
     "check:updates": "node tools/check-update-config.cjs",
-    "test": "node --test test/seasons.test.cjs test/fish-species.test.cjs test/fish-motion.test.cjs test/fish-formation.test.cjs test/boss-activity.test.cjs test/boss-dance.test.cjs test/pond-performance.test.cjs test/music-beat.test.cjs test/friend-outfit.test.cjs test/updater.test.cjs",
+    "test": "node --test test/seasons.test.cjs test/fish-species.test.cjs test/fish-motion.test.cjs test/fish-formation.test.cjs test/boss-activity.test.cjs test/boss-dance.test.cjs test/pond-performance.test.cjs test/music-beat.test.cjs test/friend-outfit.test.cjs test/updater.test.cjs test/desktop-layout.test.cjs",
     "dist": "electron-builder --win portable"
   },
   "build": {
@@ -18,6 +18,7 @@
     },
     "files": [
       "main.js",
+      "desktop-layout.js",
       "preload.js",
       "media-monitor.js",
       "media-watch.ps1",
@@ -30,6 +31,7 @@
       "portable-update.ps1",
       "wallpaper.ps1",
       "desk-input.cs",
+      "assets/**",
       "web/**"
     ],
     "win": {
@@ -37,7 +39,8 @@
         "portable"
       ],
       "executableName": "塘里",
-      "signAndEditExecutable": false
+      "icon": "assets/tangli-icon.ico",
+      "signAndEditExecutable": true
     },
     "portable": {
       "artifactName": "塘里.exe"

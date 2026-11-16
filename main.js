@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const { createStabilizer } = require("./media-monitor");
 const { createBeatTracker } = require("./music-beat");
 const { checkForUpdate, downloadUpdate } = require("./updater");
+const { matchDisplays, targetAt, normalizedPoint } = require("./desktop-layout");
 
 app.setName("塘里");
 app.setPath("userData", path.join(app.getPath("appData"), "bitan-pond"));
@@ -16,10 +17,9 @@ let win = null;
 let tray = null;
 let wallpaperOn = false;
 let fullscreenFallback = false;
-let savedStyle = null;
-let savedEx = null;
 let savedBounds = null;
 let savedMaximized = false;
+let savedMinimumSize = null;
 let toggleBusy = false;
 let detachDone = false;
 let musicWatcher = null;
@@ -38,6 +38,18 @@ let lastNotifiedUpdate = null;
 let updateStartupTimer = null;
 let updateInterval = null;
 let trayMonitor = null;
+const wallpaperWindows = new Map();
+let wallpaperStarting = false;
+let displayRefreshTimer = null;
+let displayRefreshBusy = false;
+let deskHover = null;
+const previewState = { weather: "auto", season: "auto", time: "auto", moon: "auto", music: "auto" };
+
+function broadcast(channel, value) {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send(channel, value);
+  }
+}
 
 function rhythmExe() {
   const dir = app.getPath("userData");
@@ -78,7 +90,7 @@ function startRhythmCapture() {
       const parts = line.split(/\s+/);
       if (parts.length !== 3) continue;
       const event = tracker.update(Number(parts[1]), Number(parts[2]), Number(parts[0]));
-      if (event && rhythmEnabled && musicState.playing && win && !win.isDestroyed()) win.webContents.send("system-music-beat", event);
+      if (event && rhythmEnabled && musicState.playing) broadcast("system-music-beat", event);
     }
   });
   proc.on("error", () => {});
@@ -94,7 +106,7 @@ function startRhythmCapture() {
 function publishMusicState(available, playing) {
   if (musicState.available === available && musicState.playing === playing) return;
   musicState = { available, playing };
-  if (win && !win.isDestroyed()) win.webContents.send("system-music-state", musicState);
+  broadcast("system-music-state", musicState);
   if (playing) startRhythmCapture(); else stopRhythmCapture();
 }
 
@@ -177,10 +189,6 @@ function prefPath() {
   return path.join(app.getPath("userData"), "wallpaper.json");
 }
 
-function wallpaperBackup() {
-  return path.join(app.getPath("userData"), "desktop-wallpaper.txt");
-}
-
 function readPref() {
   try {
     return JSON.parse(fs.readFileSync(prefPath(), "utf8")).on === true;
@@ -196,32 +204,18 @@ function writePref(on) {
   } catch (err) { /* ignore */ }
 }
 
-function makeIcon() {
-  const size = 32;
-  const buf = Buffer.alloc(size * size * 4);
-  const c = (size - 1) / 2;
-  const r = size * 0.38;
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const i = (y * size + x) * 4;
-      const dx = x - c;
-      const dy = y - c;
-      if (dx * dx + dy * dy <= r * r) {
-        buf[i] = 0xb4;
-        buf[i + 1] = 0xc2;
-        buf[i + 2] = 0x4f;
-        buf[i + 3] = 255;
-      }
-      // A small koi keeps the icon recognizable against the Windows taskbar.
-      const fish = ((x - 16) / 7.2) ** 2 + ((y - 16) / 3.6) ** 2 <= 1;
-      const tail = x >= 6 && x <= 10 && Math.abs(y - 16) <= (10 - x);
-      if (fish || tail) {
-        buf[i] = 0xef; buf[i + 1] = 0xf8; buf[i + 2] = 0xfa; buf[i + 3] = 255;
-        if (fish && x >= 19) { buf[i] = 0x48; buf[i + 1] = 0x68; buf[i + 2] = 0xea; }
-      }
-    }
+let cachedAppIcon = null;
+function appIcon() {
+  if (!cachedAppIcon) {
+    // Read through Electron's asar-aware filesystem, including in portable builds.
+    cachedAppIcon = nativeImage.createFromBuffer(fs.readFileSync(path.join(__dirname, "assets", "tangli-icon.png")));
+    if (cachedAppIcon.isEmpty()) throw new Error("塘里应用图标加载失败");
   }
-  return nativeImage.createFromBitmap(buf, { width: size, height: size });
+  return cachedAppIcon;
+}
+
+function makeIcon() {
+  return appIcon().resize({ width: 32, height: 32, quality: "best" });
 }
 
 function refreshTrayMenu() {
@@ -362,14 +356,6 @@ async function checkUpdates(interactive = false) {
   }
 }
 
-function primaryPixels() {
-  const display = screen.getPrimaryDisplay();
-  return {
-    w: Math.max(1, Math.round(display.bounds.width * display.scaleFactor)),
-    h: Math.max(1, Math.round(display.bounds.height * display.scaleFactor)),
-  };
-}
-
 function parseOk(line) {
   const out = {};
   String(line).replace(/\b([a-zA-Z]+)=(-?\d+)/g, (_, key, value) => {
@@ -380,9 +366,7 @@ function parseOk(line) {
 }
 
 function sendState() {
-  if (!win || win.isDestroyed()) return;
-  const on = wallpaperOn || fullscreenFallback;
-  win.webContents.send("wallpaper-state", on);
+  broadcast("wallpaper-state", wallpaperOn || fullscreenFallback || wallpaperStarting);
 }
 
 function registerWallpaperHotkey() {
@@ -432,9 +416,6 @@ function balloon(content) {
 
 let deskProc = null;
 let deskBuf = "";
-let deskOrigin = { x: 0, y: 0 };
-let deskMovePending = null;
-let deskMoveBusy = false;
 
 const DESK_BOOT = `window.__desk=function(type,x,y,b){
   if(type==="leave"){
@@ -469,15 +450,9 @@ const DESK_BOOT = `window.__desk=function(type,x,y,b){
 };
 undefined;`;
 
-function installDeskClient() {
-  if (!win || win.isDestroyed()) return Promise.resolve();
-  return win.webContents.executeJavaScript(DESK_BOOT).catch(() => {});
-}
-
-function deskPoint(sx, sy) {
-  const pt = screen.screenToDipPoint({ x: Number(sx) || 0, y: Number(sy) || 0 });
-  const origin = screen.screenToDipPoint(deskOrigin);
-  return [Math.round(pt.x - origin.x), Math.round(pt.y - origin.y)];
+function installDeskClient(target = win) {
+  if (!target || target.isDestroyed()) return Promise.resolve();
+  return target.webContents.executeJavaScript(DESK_BOOT).catch(() => {});
 }
 
 function hookExe() {
@@ -507,28 +482,30 @@ function stopDeskInput() {
   const proc = deskProc;
   deskProc = null;
   deskBuf = "";
+  deskHover = null;
   if (!proc) return;
   try { proc.kill(); } catch (err) { /* ignore */ }
 }
 
-function deskSend(type, x, y, extra) {
-  if (!win || win.isDestroyed()) return;
-  const js = "window.__desk&&window.__desk(" + JSON.stringify(type) + "," + (x | 0) + "," + (y | 0) + "," + (extra | 0) + ")";
+function deskSend(entry, type, x, y, extra) {
+  if (!entry || !entry.window || entry.window.isDestroyed()) return;
+  const target = entry.window;
+  const js = "window.__desk&&window.__desk(" + JSON.stringify(type) + "," + Number(x) + "*innerWidth," + Number(y) + "*innerHeight," + (extra | 0) + ")";
   if (type !== "move") {
-    win.webContents.executeJavaScript(js).catch(() => {});
+    target.webContents.executeJavaScript(js).catch(() => {});
     return;
   }
-  deskMovePending = js;
-  if (deskMoveBusy) return;
+  entry.movePending = js;
+  if (entry.moveBusy) return;
   const run = () => {
-    if (!deskMovePending || !win || win.isDestroyed()) {
-      deskMoveBusy = false;
+    if (!entry.movePending || target.isDestroyed()) {
+      entry.moveBusy = false;
       return;
     }
-    const code = deskMovePending;
-    deskMovePending = null;
-    deskMoveBusy = true;
-    win.webContents.executeJavaScript(code).catch(() => {}).then(run);
+    const code = entry.movePending;
+    entry.movePending = null;
+    entry.moveBusy = true;
+    target.webContents.executeJavaScript(code).catch(() => {}).then(run);
   };
   run();
 }
@@ -536,30 +513,40 @@ function deskSend(type, x, y, extra) {
 function onDeskLine(line) {
   const parts = String(line).trim().split(/\s+/);
   if (!parts[0]) return;
-  if (parts[0] === "ready" || parts[0] === "origin") {
-    deskOrigin = { x: Number(parts[1]) || 0, y: Number(parts[2]) || 0 };
-    return;
-  }
+  if (parts[0] === "ready" || parts[0] === "origin") return;
   if (parts[0] === "leave") {
-    deskSend("leave", 0, 0, 0);
+    if (deskHover) { deskHover.movePending = null; deskSend(deskHover, "leave", 0, 0, 0); deskHover = null; }
     return;
   }
-  const [x, y] = deskPoint(parts[1], parts[2]);
+  const sx = Number(parts[1]), sy = Number(parts[2]);
+  if (!Number.isFinite(sx) || !Number.isFinite(sy)) return;
+  const entry = targetAt([...wallpaperWindows.values()], sx, sy);
+  if (entry !== deskHover) {
+    if (deskHover) { deskHover.movePending = null; deskSend(deskHover, "leave", 0, 0, 0); }
+    deskHover = entry;
+  }
+  if (!entry) return;
+  const [x, y] = normalizedPoint(entry.rect, sx, sy);
   if (parts[0] === "wheel") {
     const delta = Number(parts[3]) || 0;
-    deskSend("wheel", x, y, delta > 0 ? -80 : 80);
+    deskSend(entry, "wheel", x, y, delta > 0 ? -80 : 80);
     return;
   }
-  deskSend(parts[0], x, y, Number(parts[3]) || 0);
+  deskSend(entry, parts[0], x, y, Number(parts[3]) || 0);
 }
 
 function startDeskInput() {
   stopDeskInput();
   try {
     const exe = hookExe();
-    deskProc = spawn(exe, [hwndOf(win), String(process.pid)], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-    deskProc.stdout.setEncoding("utf8");
-    deskProc.stdout.on("data", (chunk) => {
+    const entries = [...wallpaperWindows.values()].filter((entry) => !entry.window.isDestroyed());
+    if (!entries.length) return;
+    const screens = entries.map(({ window, rect }) => [hwndOf(window), rect.x, rect.y, rect.width, rect.height].join(",")).join(";");
+    const proc = spawn(exe, [hwndOf(entries[0].window), String(process.pid), screens], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    deskProc = proc;
+    proc.stdout.setEncoding("utf8");
+    proc.stdout.on("data", (chunk) => {
+      if (deskProc !== proc) return;
       deskBuf += chunk;
       let idx;
       while ((idx = deskBuf.indexOf("\n")) >= 0) {
@@ -568,44 +555,181 @@ function startDeskInput() {
         onDeskLine(line);
       }
     });
-    deskProc.on("exit", () => {});
+    proc.on("error", (error) => { if (deskProc === proc) { deskProc = null; logWallpaperError(error); } });
+    proc.on("exit", () => { if (deskProc === proc) deskProc = null; });
   } catch (err) {
     logWallpaperError(err);
+  }
+}
+
+async function getWallpaperDisplays() {
+  const line = await runPs(["-Action", "monitors"]);
+  if (!line.startsWith("OK displays=")) throw new Error("Cannot enumerate Windows monitors: " + line);
+  const monitors = line.slice("OK displays=".length).split(";").map((part) => {
+    const [x, y, width, height] = part.split(",").map(Number);
+    if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) throw new Error("Invalid monitor bounds");
+    return { x, y, width, height };
+  });
+  const displays = matchDisplays(screen.getAllDisplays(), monitors, (point) => screen.dipToScreenPoint(point));
+  const primary = screen.getPrimaryDisplay().id;
+  displays.sort((a, b) => (a.id === primary ? -1 : 0) - (b.id === primary ? -1 : 0));
+  return displays;
+}
+
+function positionArgs(rect) {
+  return ["-Left", String(rect.x), "-Top", String(rect.y), "-Width", String(rect.width), "-Height", String(rect.height)];
+}
+
+function actualRect(info) {
+  return { x: Number(info.x), y: Number(info.y), width: Number(info.w), height: Number(info.h) };
+}
+
+function checkPosition(actual, expected) {
+  if (["x", "y", "width", "height"].some((key) => !Number.isFinite(actual[key]) || Math.abs(actual[key] - expected[key]) > 2)) {
+    throw new Error("Desktop window does not cover its monitor: " + JSON.stringify({ actual, expected }));
+  }
+}
+
+async function attachWallpaperWindow(target, display) {
+  const line = await runPs(["-Action", "attach", "-Hwnd", hwndOf(target), ...positionArgs(display.rect)]);
+  const info = parseOk(line);
+  if (info.style == null || info.ex == null) throw new Error("Missing desktop window style: " + line);
+  const entry = { id: display.id, window: target, style: info.style, ex: info.ex, rect: actualRect(info), bounds: display.bounds };
+  try { checkPosition(entry.rect, display.rect); }
+  catch (error) { await detachWallpaperWindow(entry); throw error; }
+  wallpaperWindows.set(display.id, entry);
+  await installDeskClient(target);
+  target.webContents.executeJavaScript("window.dispatchEvent(new Event('resize'))").catch(() => {});
+  return entry;
+}
+
+async function detachWallpaperWindow(entry) {
+  if (!entry || !entry.window || entry.window.isDestroyed()) return;
+  await runPs(["-Action", "detach", "-Hwnd", hwndOf(entry.window), "-Style", String(entry.style), "-Ex", String(entry.ex), "-NoRestore"]);
+}
+
+async function createWallpaperWindow(display) {
+  const target = new BrowserWindow({
+    ...display.bounds, frame: false, show: false, skipTaskbar: true, focusable: false,
+    backgroundColor: "#4fc2b4", autoHideMenuBar: true, icon: appIcon(),
+    webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true,
+      nodeIntegration: false, sandbox: true, backgroundThrottling: false },
+  });
+  target.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  try {
+    await target.loadFile(path.join(__dirname, "web", "index.html"));
+    await attachWallpaperWindow(target, display);
+    return target;
+  } catch (error) {
+    if (!target.isDestroyed()) target.destroy();
+    throw error;
+  }
+}
+
+async function moveWallpaperWindow(entry, display) {
+  const info = parseOk(await runPs(["-Action", "move", "-Hwnd", hwndOf(entry.window), ...positionArgs(display.rect)]));
+  const rect = actualRect(info);
+  checkPosition(rect, display.rect);
+  entry.rect = rect;
+  entry.bounds = display.bounds;
+  entry.window.webContents.executeJavaScript("window.dispatchEvent(new Event('resize'))").catch(() => {});
+}
+
+async function clearWallpaperWindows() {
+  const entries = [...wallpaperWindows.values()];
+  wallpaperWindows.clear();
+  for (const entry of entries) {
+    try { await detachWallpaperWindow(entry); } catch (error) { logWallpaperError(error); }
+    if (entry.window !== win && !entry.window.isDestroyed()) entry.window.destroy();
   }
 }
 
 async function enterWallpaper() {
   savedBounds = win.getBounds();
   savedMaximized = win.isMaximized() || win.isFullScreen();
+  savedMinimumSize = win.getMinimumSize();
   await waitUnmaximize();
+  // A smaller external or laptop display must not inherit the normal window's
+  // minimum size. Restore it when leaving desktop mode.
+  win.setMinimumSize(1, 1);
   win.setSkipTaskbar(true);
   win.setAlwaysOnTop(false);
   win.setMenuBarVisibility(false);
-  const px = primaryPixels();
-  const line = await runPs([
-    "-Action", "attach",
-    "-Hwnd", hwndOf(win),
-    "-Width", String(px.w),
-    "-Height", String(px.h),
-    "-Backup", wallpaperBackup(),
-  ]);
-  const info = parseOk(line);
-  savedStyle = info.style != null ? info.style : null;
-  savedEx = info.ex != null ? info.ex : null;
-  wallpaperOn = true;
-  fullscreenFallback = false;
-  detachDone = false;
-  writePref(true);
-  ensureTray();
-  refreshTrayMenu();
-  registerWallpaperHotkey();
-  balloon("已铺在桌面。点空白处可以喂鱼、用右上角小记；快捷方式仍可点击。托盘图标或 F11 恢复窗口。");
-  sendState();
-  win.showInactive();
-  win.webContents.executeJavaScript("window.dispatchEvent(new Event('resize'))").catch(() => {});
-  await delay(220);
-  await installDeskClient();
-  startDeskInput();
+  wallpaperStarting = true;
+  try {
+    const displays = await getWallpaperDisplays();
+    if (!displays.length) throw new Error("No displays available");
+    win.setBounds(displays[0].bounds);
+    await attachWallpaperWindow(win, displays[0]);
+    for (const display of displays.slice(1)) await createWallpaperWindow(display);
+    wallpaperOn = true;
+    fullscreenFallback = false;
+    detachDone = false;
+    writePref(true);
+    ensureTray();
+    refreshTrayMenu();
+    registerWallpaperHotkey();
+    sendState();
+    win.showInactive();
+    startDeskInput();
+    balloon("已铺到所有屏幕。托盘图标或 F11 可以恢复窗口。");
+  } catch (error) {
+    await clearWallpaperWindows();
+    if (savedMinimumSize && !win.isDestroyed()) win.setMinimumSize(...savedMinimumSize);
+    throw error;
+  } finally { wallpaperStarting = false; }
+}
+
+async function refreshWallpaperDisplays() {
+  // A display can be connected while the initial windows are still attaching.
+  // Keep the notification until that transaction has finished.
+  if (wallpaperStarting) { scheduleDisplayRefresh(); return; }
+  if (!wallpaperOn || toggleBusy || displayRefreshBusy) { if (wallpaperOn) scheduleDisplayRefresh(); return; }
+  displayRefreshBusy = true;
+  stopDeskInput();
+  try {
+    const displays = await getWallpaperDisplays();
+    if (!displays.length) throw new Error("No displays available");
+    const primary = displays[0];
+    let mainEntry = [...wallpaperWindows.values()].find((entry) => entry.window === win);
+    if (!mainEntry) throw new Error("Main desktop window is missing");
+    if (mainEntry.id !== primary.id) {
+      const displaced = wallpaperWindows.get(primary.id);
+      if (displaced) {
+        wallpaperWindows.delete(primary.id);
+        await detachWallpaperWindow(displaced);
+        if (!displaced.window.isDestroyed()) displaced.window.destroy();
+      }
+      wallpaperWindows.delete(mainEntry.id);
+      mainEntry.id = primary.id;
+      wallpaperWindows.set(primary.id, mainEntry);
+    }
+    const wanted = new Set(displays.map((display) => display.id));
+    for (const [id, entry] of wallpaperWindows) {
+      if (wanted.has(id)) continue;
+      wallpaperWindows.delete(id);
+      try { await detachWallpaperWindow(entry); } finally { if (!entry.window.isDestroyed()) entry.window.destroy(); }
+    }
+    for (const display of displays) {
+      const entry = wallpaperWindows.get(display.id);
+      if (!entry) await createWallpaperWindow(display);
+      else if (["x", "y", "width", "height"].some((key) => entry.rect[key] !== display.rect[key] || entry.bounds[key] !== display.bounds[key])) {
+        await moveWallpaperWindow(entry, display);
+      }
+    }
+  } catch (error) {
+    logWallpaperError(error);
+    await leaveSpecial();
+    balloon("显示器布局更新失败，已恢复窗口；可以按 F11 重试。");
+  } finally {
+    displayRefreshBusy = false;
+    if (wallpaperOn) startDeskInput();
+  }
+}
+
+function scheduleDisplayRefresh() {
+  if (displayRefreshTimer) clearTimeout(displayRefreshTimer);
+  displayRefreshTimer = setTimeout(() => { displayRefreshTimer = null; refreshWallpaperDisplays(); }, 350);
 }
 
 async function enterFullscreenFallback() {
@@ -624,34 +748,29 @@ async function enterFullscreenFallback() {
 
 function detachSync() {
   stopDeskInput();
-  if (detachDone || !wallpaperOn || savedStyle == null || !win || win.isDestroyed()) return;
+  if (displayRefreshTimer) { clearTimeout(displayRefreshTimer); displayRefreshTimer = null; }
+  if (detachDone || !wallpaperWindows.size) return;
   detachDone = true;
   wallpaperOn = false;
-  spawnSync(psExe(), [
-    "-NoProfile",
-    "-NonInteractive",
-    "-ExecutionPolicy", "Bypass",
-    "-File", scriptFile(),
-    "-Action", "detach",
-    "-Hwnd", hwndOf(win),
-    "-Style", String(savedStyle),
-    "-Ex", String(savedEx == null ? "0" : savedEx),
-    "-Backup", wallpaperBackup(),
-  ], { windowsHide: true, timeout: 8000 });
+  for (const entry of wallpaperWindows.values()) {
+    if (entry.window.isDestroyed()) continue;
+    spawnSync(psExe(), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptFile(),
+      "-Action", "detach", "-Hwnd", hwndOf(entry.window), "-Style", String(entry.style), "-Ex", String(entry.ex), "-NoRestore"],
+    { windowsHide: true, timeout: 8000 });
+    if (entry.window !== win && !entry.window.isDestroyed()) entry.window.destroy();
+  }
+  wallpaperWindows.clear();
 }
 
 async function leaveSpecial() {
   stopDeskInput();
   unregisterWallpaperHotkey();
+  if (displayRefreshTimer) { clearTimeout(displayRefreshTimer); displayRefreshTimer = null; }
   try {
-    if (wallpaperOn && savedStyle != null) {
-      const hwnd = hwndOf(win);
-      const style = savedStyle;
-      const ex = savedEx == null ? "0" : savedEx;
+    if (wallpaperOn || wallpaperWindows.size) {
       wallpaperOn = false;
       detachDone = true;
-      await runPs(["-Action", "detach", "-Hwnd", hwnd, "-Style", String(style), "-Ex", String(ex), "-Backup", wallpaperBackup()]);
-      try { fs.unlinkSync(wallpaperBackup()); } catch (err) { /* ignore */ }
+      await clearWallpaperWindows();
     }
     if (fullscreenFallback && !win.isDestroyed()) {
       if (win.isFullScreen()) win.setFullScreen(false);
@@ -661,11 +780,10 @@ async function leaveSpecial() {
     fullscreenFallback = false;
     wallpaperOn = false;
     detachDone = false;
-    savedStyle = null;
-    savedEx = null;
     if (win && !win.isDestroyed()) {
       win.setSkipTaskbar(false);
       win.setMenuBarVisibility(false);
+      if (savedMinimumSize) win.setMinimumSize(...savedMinimumSize);
       if (savedMaximized) win.maximize();
       else if (savedBounds) win.setBounds(savedBounds);
       win.show();
@@ -673,6 +791,7 @@ async function leaveSpecial() {
       sendState();
     }
     refreshTrayMenu();
+    savedMinimumSize = null;
     writePref(false);
   }
 }
@@ -681,6 +800,7 @@ async function toggleWallpaper() {
   if (toggleBusy || !win || win.isDestroyed()) return { on: wallpaperOn || fullscreenFallback };
   toggleBusy = true;
   try {
+    while (displayRefreshBusy) await delay(50);
     if (wallpaperOn || fullscreenFallback) {
       await leaveSpecial();
     } else {
@@ -705,6 +825,7 @@ function createWindow() {
     minWidth: 1024,
     minHeight: 680,
     title: "塘里",
+    icon: appIcon(),
     backgroundColor: "#4fc2b4",
     autoHideMenuBar: true,
     show: false,
@@ -777,13 +898,26 @@ async function sweepPortableLeftovers() {
 }
 
 ipcMain.handle("wallpaper:toggle", () => toggleWallpaper());
-ipcMain.handle("wallpaper:state", () => ({ on: wallpaperOn || fullscreenFallback }));
+ipcMain.handle("wallpaper:state", () => ({ on: wallpaperOn || fullscreenFallback || wallpaperStarting }));
 ipcMain.handle("update:check", () => checkUpdates(true));
 ipcMain.handle("music:state", () => musicState);
 ipcMain.handle("music:rhythm-enabled", (_event, enabled) => {
   rhythmEnabled = !!enabled;
   if (rhythmEnabled) startRhythmCapture(); else stopRhythmCapture();
   return rhythmEnabled;
+});
+ipcMain.handle("scene:preview-state", () => ({ ...previewState }));
+ipcMain.on("scene:preview", (_event, key, value) => {
+  const choices = {
+    weather: ["auto", "clear", "wind", "rain", "snow", "drizzle"],
+    season: ["auto", "spring", "summer", "autumn", "winter"],
+    time: ["auto", "dawn", "noon", "dusk", "night", "fast"],
+    moon: ["auto", "crescent", "first", "full", "last", "waning"],
+    music: ["auto", "show", "ring", "lotus", "heart", "double", "spiral"],
+  };
+  if (!Object.prototype.hasOwnProperty.call(choices, key) || !choices[key].includes(value)) return;
+  previewState[key] = value;
+  broadcast("scene:preview", { key, value });
 });
 
 app.whenReady().then(() => {
@@ -800,6 +934,9 @@ app.whenReady().then(() => {
     callback({ responseHeaders: headers });
   });
   ensureTray();
+  screen.on("display-added", scheduleDisplayRefresh);
+  screen.on("display-removed", scheduleDisplayRefresh);
+  screen.on("display-metrics-changed", scheduleDisplayRefresh);
   trayMonitor = setInterval(ensureTray, 30000);
   createWindow();
   startMusicWatcher();
@@ -810,24 +947,6 @@ app.whenReady().then(() => {
   setTimeout(() => { sweepPortableLeftovers().catch(() => {}); }, 8000);
 });
 
-
-function restoreDesktopWallpaperSync() {
-  try {
-    if (!fs.existsSync(wallpaperBackup())) return false;
-    const result = spawnSync(psExe(), [
-      "-NoProfile",
-      "-NonInteractive",
-      "-ExecutionPolicy", "Bypass",
-      "-File", scriptFile(),
-      "-Action", "restore",
-      "-Backup", wallpaperBackup(),
-    ], { windowsHide: true, timeout: 15000, encoding: "utf8" });
-    return result.status === 0 && String(result.stdout || "").indexOf("OK") >= 0;
-  } catch (err) {
-    logWallpaperError(err);
-    return false;
-  }
-}
 
 app.on("before-quit", () => {
   if (updateStartupTimer) clearTimeout(updateStartupTimer);
@@ -840,9 +959,6 @@ app.on("before-quit", () => {
 
 app.on("will-quit", () => {
   destroyTray();
-  if (restoreDesktopWallpaperSync()) {
-    try { fs.unlinkSync(wallpaperBackup()); } catch (err) { /* ignore */ }
-  }
 });
 
 app.on("window-all-closed", () => app.quit());

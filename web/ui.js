@@ -46,6 +46,7 @@
 
   const $ = (id) => document.getElementById(id);
   let place = null;
+  let placeRevision = 0;
   let report = null;
   let demo = "auto";
   let musicOverride = "auto";
@@ -206,21 +207,32 @@
 
   async function loadWeather() {
     if (!place) return;
+    const requested = { lat: place.lat, lon: place.lon };
+    const isCurrent = () => {
+      if (!place || place.lat !== requested.lat || place.lon !== requested.lon) return false;
+      try {
+        const selected = JSON.parse(localStorage.getItem("bitan.place") || "null");
+        return !selected || (Number(selected.lat) === requested.lat && Number(selected.lon) === requested.lon);
+      } catch (_) { return true; }
+    };
     $("now-label").textContent = "正在获取天气…";
-    const url = "https://api.open-meteo.com/v1/forecast?latitude=" + place.lat +
-      "&longitude=" + place.lon +
+    const url = "https://api.open-meteo.com/v1/forecast?latitude=" + requested.lat +
+      "&longitude=" + requested.lon +
       "&current=temperature_2m,weather_code,wind_speed_10m" +
       "&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=3";
     try {
       const res = await fetch(url);
       if (!res.ok) throw new Error("status " + res.status);
-      report = await res.json();
+      const nextReport = await res.json();
+      if (!isCurrent()) return;
+      report = nextReport;
       report.fetchedAt = Date.now();
       if (report.timezone && place.tz !== report.timezone) { place.tz = report.timezone; savePlace(); }
       try { localStorage.setItem("bitan.weather", JSON.stringify({ place, report })); } catch (err) { /* ignore */ }
       renderWeather();
       clockTick();
     } catch (err) {
+      if (!isCurrent()) return;
       $("now-label").textContent = "暂时连不上天气服务";
       if (report) renderDays();
     }
@@ -231,6 +243,7 @@
   }
 
   async function usePlace(next) {
+    placeRevision++;
     place = {
       name: next.name,
       lat: Number(next.lat),
@@ -292,6 +305,7 @@
   }
 
   async function useHere() {
+    const revision = ++placeRevision;
     $("place-label").textContent = "正在定位…";
     $("use-geo").checked = true;
     try {
@@ -299,6 +313,7 @@
         if (!navigator.geolocation) { reject(new Error("no geo")); return; }
         navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: false, timeout: 6000, maximumAge: 600000 });
       });
+      if (revision !== placeRevision) return;
       let name = "当前位置";
       try {
         const rev = await fetch("https://geocoding-api.open-meteo.com/v1/reverse?latitude=" + pos.coords.latitude + "&longitude=" + pos.coords.longitude + "&language=zh&format=json");
@@ -307,13 +322,15 @@
           if (data.results && data.results[0]) name = data.results[0].name;
         }
       } catch (err) { /* 没有逆地理也没关系 */ }
+      if (revision !== placeRevision) return;
       await usePlace({ name, lat: pos.coords.latitude, lon: pos.coords.longitude });
-      $("use-geo").checked = true;
+      if (placeRevision === revision + 1) $("use-geo").checked = true;
       return;
-    } catch (err) { /* 继续用网络位置 */ }
+    } catch (err) { if (revision !== placeRevision) return; /* 继续用网络位置 */ }
     try {
       const res = await fetch("https://ipwho.is/");
       const data = await res.json();
+      if (revision !== placeRevision) return;
       if (!data.success) throw new Error("ip");
       let name = data.city || "当前位置";
       let lat = data.latitude;
@@ -327,9 +344,11 @@
           lon = json.results[0].longitude;
         }
       } catch (err) { /* 用原始坐标 */ }
+      if (revision !== placeRevision) return;
       await usePlace({ name, lat, lon, tz: data.timezone && data.timezone.id });
-      $("use-geo").checked = true;
+      if (placeRevision === revision + 1) $("use-geo").checked = true;
     } catch (err) {
+      if (revision !== placeRevision) return;
       $("use-geo").checked = false;
       toast("没有拿到位置，可以手动选一个城市");
       if (!place) await usePlace({ name: "杭州", lat: 30.2741, lon: 120.1551 });
@@ -589,6 +608,22 @@
     });
   }
 
+  function applyPreview(key, value) {
+    if (key === "weather") { demo = value; applyAtmosphere(); }
+    else if (key === "season") Pond.setSeasonMode(value);
+    else if (key === "time") Pond.setTimeMode(value);
+    else if (key === "moon") Pond.setMoonMode(value);
+    else if (key === "music") { musicOverride = value; applyMusicShow(); }
+    document.querySelectorAll('[data-preview-key="' + key + '"]').forEach((button) => {
+      button.classList.toggle("on", button.dataset.previewValue === value);
+    });
+  }
+
+  function selectPreview(key, value) {
+    applyPreview(key, value);
+    if (window.scenePreview) window.scenePreview.set(key, value);
+  }
+
   function bootDemo() {
     const menu = $("demo-menu");
     const cap = document.createElement("div");
@@ -603,24 +638,24 @@
       btn.type = "button";
       btn.textContent = label;
       btn.dataset.mode = id;
+      btn.dataset.previewKey = "weather";
+      btn.dataset.previewValue = id;
       if (id === "auto") btn.classList.add("on");
       btn.addEventListener("click", () => {
-        demo = id;
-        menu.querySelectorAll("button[data-mode]").forEach((el) => el.classList.toggle("on", el === btn));
         menu.classList.add("hidden");
-        applyAtmosphere();
+        selectPreview("weather", id);
       });
       weatherGrid.appendChild(btn);
     });
-    demoGroup(menu, "季节演示", SEASONS, (id) => Pond.setSeasonMode(id));
-    demoGroup(menu, "时间演示", TIMES, (id) => Pond.setTimeMode(id));
-    demoGroup(menu, "月相演示", MOONS, (id) => Pond.setMoonMode(id));
+    demoGroup(menu, "季节演示", SEASONS, "season");
+    demoGroup(menu, "时间演示", TIMES, "time");
+    demoGroup(menu, "月相演示", MOONS, "moon");
     demoGroup(menu, "音乐表演", [["auto", "跟随系统"], ["show", "循环预览"], ["ring", "圆圈"],
       ["lotus", "荷花"], ["heart", "爱心"], ["double", "双环"], ["spiral", "漩涡"]],
-    (id) => { musicOverride = id; applyMusicShow(); });
+    "music");
   }
 
-  function demoGroup(menu, title, items, apply) {
+  function demoGroup(menu, title, items, key) {
     const cap = document.createElement("div");
     cap.className = "cap";
     cap.textContent = title;
@@ -632,11 +667,13 @@
       const btn = document.createElement("button");
       btn.type = "button";
       btn.textContent = label;
+      btn.dataset.previewKey = key;
+      btn.dataset.previewValue = id;
       if (id === "auto") btn.classList.add("on");
       btn.addEventListener("click", () => {
         btns.forEach((el) => el.classList.toggle("on", el === btn));
         menu.classList.add("hidden");
-        if (window.Pond) apply(id);
+        if (window.Pond) selectPreview(key, id);
       });
       btns.push(btn);
       grid.appendChild(btn);
@@ -769,7 +806,8 @@
       const saved = JSON.parse(localStorage.getItem("bitan.place") || "null");
       if (saved && saved.name && saved.lat && saved.lon) place = saved;
       const cached = JSON.parse(localStorage.getItem("bitan.weather") || "null");
-      if (cached && cached.report) report = cached.report;
+      if (cached && cached.report && (!place || !cached.place ||
+          (Number(place.lat) === Number(cached.place.lat) && Number(place.lon) === Number(cached.place.lon)))) report = cached.report;
     } catch (err) { /* ignore */ }
   }
 
@@ -792,6 +830,55 @@
   bootDemo();
   bootSwatches();
   bind();
+  if (window.scenePreview) {
+    const changed = new Set();
+    window.scenePreview.onChange(({ key, value }) => { changed.add(key); applyPreview(key, value); });
+    window.scenePreview.state().then((state) => {
+      Object.entries(state || {}).forEach(([key, value]) => { if (!changed.has(key)) applyPreview(key, value); });
+    }).catch(() => {});
+  }
+  window.addEventListener("storage", (event) => {
+    try {
+      switch (event.key) {
+        case "bitan.fish-counts.v1":
+          if (event.newValue) Pond.setFishCounts(JSON.parse(event.newValue));
+          break;
+        case "bitan.customs": Pond.syncCustoms(JSON.parse(event.newValue || "[]")); break;
+        case "bitan.boss.visible":
+          if (Pond.bossVisible() !== (event.newValue !== "0")) Pond.setBossVisible(event.newValue !== "0");
+          $("boss-visible").checked = Pond.bossVisible();
+          break;
+        case "bitan.friend.visible":
+          if (Pond.friendVisible() !== (event.newValue !== "0")) Pond.setFriendVisible(event.newValue !== "0");
+          $("friend-visible").checked = Pond.friendVisible();
+          break;
+        case "bitan.boss.outfit":
+          if (event.newValue && Pond.bossOutfit() !== event.newValue) Pond.setBossOutfit(event.newValue);
+          break;
+        case "bitan.friend.outfit":
+          if (event.newValue && Pond.friendOutfit() !== event.newValue) Pond.setFriendOutfit(event.newValue);
+          break;
+        case "bitan.boss.sound":
+          if (Pond.bossSound() !== (event.newValue === "1")) Pond.setBossSound(event.newValue === "1");
+          break;
+        case "bitan.music.rhythm":
+          if (rhythmEnabled !== (event.newValue !== "0")) setRhythmEnabled(event.newValue !== "0");
+          $("music-rhythm").checked = rhythmEnabled;
+          break;
+        case "bitan.place":
+          if (event.newValue) { placeRevision++; place = JSON.parse(event.newValue); applyAtmosphere(); clockTick(); markChips(); }
+          break;
+        case "bitan.weather": {
+          const cached = JSON.parse(event.newValue || "null");
+          const selected = JSON.parse(localStorage.getItem("bitan.place") || "null");
+          const samePlace = !selected || !cached || !cached.place ||
+            (Number(selected.lat) === Number(cached.place.lat) && Number(selected.lon) === Number(cached.place.lon));
+          if (cached && cached.report && samePlace) { place = cached.place || place; report = cached.report; renderWeather(); clockTick(); }
+          break;
+        }
+      }
+    } catch (_) { /* Ignore malformed data from an older version. */ }
+  });
   if (window.wallpaper) {
     let stateVersion = 0;
     window.wallpaper.onChange((on) => { stateVersion++; setWallpaperMode(on); });

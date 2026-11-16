@@ -1,12 +1,15 @@
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet("probe", "attach", "detach", "remember", "restore")]
+  [ValidateSet("probe", "monitors", "attach", "move", "detach", "remember", "restore")]
   [string]$Action,
   [string]$Hwnd = "0",
   [string]$Style = "0",
   [string]$Ex = "0",
   [int]$Width = 0,
   [int]$Height = 0,
+  [int]$Left = 0,
+  [int]$Top = 0,
+  [switch]$NoRestore,
   [string]$Backup = ""
 )
 
@@ -17,10 +20,18 @@ Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Collections.Generic;
 
 public static class DeskWp {
   [UnmanagedFunctionPointer(CallingConvention.StdCall)]
   public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
+  public delegate bool MonitorProc(IntPtr monitor, IntPtr hdc, ref RECT bounds, IntPtr data);
+
+  [DllImport("shcore.dll")] public static extern int SetProcessDpiAwareness(int value);
+  [DllImport("user32.dll")] public static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr clip, MonitorProc callback, IntPtr data);
+  [DllImport("user32.dll")] public static extern int MapWindowPoints(IntPtr from, IntPtr to, ref POINT point, uint count);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern bool RedrawWindow(IntPtr hwnd, IntPtr update, IntPtr region, uint flags);
 
   [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "FindWindowW")]
   public static extern IntPtr FindWindow(string cls, string name);
@@ -59,6 +70,7 @@ public static class DeskWp {
   public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
 
   public struct RECT { public int left, top, right, bottom; }
+  public struct POINT { public int x, y; }
 
   [ComImport, Guid("C2CF3110-460E-4fc1-B9D0-8A1C0C9CC4BD")]
   class DesktopWallpaper { }
@@ -111,7 +123,37 @@ public static class DeskWp {
     return "OK parent=" + parent.ToInt64() + " class=" + ClassOf(parent) + " w=" + w + " h=" + h;
   }
 
-  public static string Attach(long hwndValue, int fallbackW, int fallbackH, string backupFile) {
+  public static string Monitors() {
+    var list = new List<string>();
+    MonitorProc callback = delegate(IntPtr monitor, IntPtr hdc, ref RECT rect, IntPtr data) {
+      list.Add(rect.left + "," + rect.top + "," + (rect.right - rect.left) + "," + (rect.bottom - rect.top));
+      return true;
+    };
+    if (!EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, callback, IntPtr.Zero) || list.Count == 0) return "ERR no-monitors";
+    return "OK displays=" + String.Join(";", list.ToArray());
+  }
+
+  static string Place(IntPtr hwnd, IntPtr parent, int left, int top, int width, int height) {
+    if (width <= 0 || height <= 0) return "ERR invalid-size";
+    POINT pos = new POINT { x = left, y = top };
+    MapWindowPoints(IntPtr.Zero, parent, ref pos, 1);
+    SetWindowRgn(hwnd, IntPtr.Zero, true);
+    if (!SetWindowPos(hwnd, new IntPtr(1), pos.x, pos.y, width, height, 0x0010 | 0x0020 | 0x0040)) return "ERR position";
+    ShowWindow(hwnd, 8);
+    RECT actual;
+    if (!GetWindowRect(hwnd, out actual)) return "ERR bounds";
+    return " x=" + actual.left + " y=" + actual.top + " w=" + (actual.right - actual.left) + " h=" + (actual.bottom - actual.top);
+  }
+
+  public static string Move(long hwndValue, int left, int top, int width, int height) {
+    IntPtr hwnd = new IntPtr(hwndValue);
+    IntPtr parent = GetAncestor(hwnd, 1);
+    if (parent == IntPtr.Zero) return "ERR no-parent";
+    string result = Place(hwnd, parent, left, top, width, height);
+    return result.StartsWith("ERR") ? result : "OK" + result;
+  }
+
+  public static string Attach(long hwndValue, int left, int top, int width, int height, string backupFile) {
     Remember(backupFile);
     IntPtr hwnd = new IntPtr(hwndValue);
     IntPtr parent = FindHost();
@@ -125,21 +167,19 @@ public static class DeskWp {
     SetWindowLongPtr(hwnd, -20, new IntPtr(ex2));
     SetParent(hwnd, parent);
     IntPtr now = GetAncestor(hwnd, 1);
-    if (now != parent) return "ERR parent style=" + style + " ex=" + ex + " now=" + now.ToInt64();
-    RECT r;
-    GetClientRect(parent, out r);
-    int w = r.right - r.left;
-    int h = r.bottom - r.top;
-    if (w < 200 || h < 200) {
-      w = fallbackW;
-      h = fallbackH;
+    if (now != parent) {
+      SetWindowLongPtr(hwnd, -16, new IntPtr(style));
+      SetWindowLongPtr(hwnd, -20, new IntPtr(ex));
+      return "ERR parent style=" + style + " ex=" + ex + " now=" + now.ToInt64();
     }
-    if (w < 200) w = 1920;
-    if (h < 200) h = 1080;
-    SetWindowRgn(hwnd, IntPtr.Zero, true);
-    SetWindowPos(hwnd, new IntPtr(1), 0, 0, w, h, 0x0010 | 0x0020 | 0x0040);
-    ShowWindow(hwnd, 8);
-    return "OK style=" + style + " ex=" + ex + " w=" + w + " h=" + h + " parent=" + parent.ToInt64();
+    string result = Place(hwnd, parent, left, top, width, height);
+    if (result.StartsWith("ERR")) {
+      SetParent(hwnd, IntPtr.Zero);
+      SetWindowLongPtr(hwnd, -16, new IntPtr(style));
+      SetWindowLongPtr(hwnd, -20, new IntPtr(ex));
+      return result;
+    }
+    return "OK style=" + style + " ex=" + ex + result + " parent=" + parent.ToInt64();
   }
 
   [DllImport("user32.dll")]
@@ -190,24 +230,33 @@ public static class DeskWp {
     return ok ? "OK restored=1" : "ERR set";
   }
 
-  public static string Detach(long hwndValue, long style, long ex, string backupFile) {
+  public static string Detach(long hwndValue, long style, long ex, string backupFile, bool noRestore) {
     IntPtr hwnd = new IntPtr(hwndValue);
+    IntPtr oldParent = GetAncestor(hwnd, 1);
     SetWindowRgn(hwnd, IntPtr.Zero, true);
     SetParent(hwnd, IntPtr.Zero);
     SetWindowLongPtr(hwnd, -16, new IntPtr(style));
     SetWindowLongPtr(hwnd, -20, new IntPtr(ex));
     SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0020 | 0x0040);
     ShowWindow(hwnd, 5);
+    if (noRestore) {
+      if (oldParent != IntPtr.Zero) RedrawWindow(oldParent, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0080 | 0x0400);
+      return "OK detached=1";
+    }
     string restored = Restore(backupFile);
     return restored.StartsWith("OK") ? "OK restored=1" : restored;
   }
 }
 "@
 
+try { [void][DeskWp]::SetProcessDpiAwareness(2) } catch { }
+
 switch ($Action) {
   "probe" { Write-Output ([DeskWp]::Probe()) }
+  "monitors" { Write-Output ([DeskWp]::Monitors()) }
   "remember" { [DeskWp]::Remember($Backup); Write-Output "OK" }
   "restore" { Write-Output ([DeskWp]::Restore($Backup)) }
-  "attach" { Write-Output ([DeskWp]::Attach([int64]$Hwnd, $Width, $Height, $Backup)) }
-  "detach" { Write-Output ([DeskWp]::Detach([int64]$Hwnd, [int64]$Style, [int64]$Ex, $Backup)) }
+  "attach" { Write-Output ([DeskWp]::Attach([int64]$Hwnd, $Left, $Top, $Width, $Height, $Backup)) }
+  "move" { Write-Output ([DeskWp]::Move([int64]$Hwnd, $Left, $Top, $Width, $Height)) }
+  "detach" { Write-Output ([DeskWp]::Detach([int64]$Hwnd, [int64]$Style, [int64]$Ex, $Backup, [bool]$NoRestore)) }
 }
