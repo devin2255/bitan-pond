@@ -13,7 +13,7 @@ app.whenReady().then(async () => {
   try {
     const fetch = (url, options) => {
       requests.push(url);
-      if (process.argv.includes("--no-github") && /^https:\/\/(?:api\.)?github\.com\//.test(url)) {
+      if (process.argv.includes("--no-github") && /^https:\/\/(?:(?:api\.)?github\.com|raw\.githubusercontent\.com)\//.test(url)) {
         return Promise.reject(new Error("GitHub deliberately disabled for smoke test"));
       }
       return net.fetch(url, options);

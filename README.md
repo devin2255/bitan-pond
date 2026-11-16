@@ -47,9 +47,9 @@ npm start
 
 便携版启动后自动检查正式发行版，也可从托盘菜单或池塘右键菜单手动检查。更新包会校验大小和 SHA-256，确认重启后替换当前 EXE，并保留本地设置。如果托盘图标被 Windows 折叠，可在任务栏右下角的“^”中找到，并在任务栏设置中选择始终显示。
 
-从 v1.1.1 开始，自动更新会同时检查 GitHub 和两条无需注册的第三方 GitHub 镜像；镜像可以在部分无法直连 GitHub 的网络环境下使用，但不承诺长期可用或在所有网络中可达。国内镜像的更新清单经过项目签名，所有分片和合并后的 EXE 都会校验 SHA-256；镜像失败时会切换下载源。v1.1.2 起支持并行下载分片。旧版 v1.0.0 和 v1.1.0 尚无此镜像更新能力，无法直连 GitHub 的用户需要先手动下载一次 v1.1.1 或更新版本。
+从 v1.1.3 开始，官方和镜像更新源都必须通过项目签名验证；签名绑定版本号、分片和完整程序的哈希。更新器并发检查多个来源，并行下载分片，某个镜像失败时会尝试其他地址。第三方镜像可以在部分无法直连 GitHub 的网络环境下使用，但不承诺长期可用或在所有网络中可达。v1.1.0 和更早版本在无法直连 GitHub 时需要先手动下载新版。
 
-首次下载 v1.1.2：[镜像一](https://gh-proxy.com/https://github.com/devin2255/bitan-pond/releases/download/v1.1.2/Tangli-v1.1.2-Windows-x64.exe) · [镜像二](https://ghproxy.net/https://github.com/devin2255/bitan-pond/releases/download/v1.1.2/Tangli-v1.1.2-Windows-x64.exe) · [GitHub](https://github.com/devin2255/bitan-pond/releases/tag/v1.1.2)。镜像由第三方提供，无法保证持续可用。
+首次下载 v1.1.3：[镜像一](https://gh-proxy.com/https://github.com/devin2255/bitan-pond/releases/download/v1.1.3/Tangli-v1.1.3-Windows-x64.exe) · [镜像二](https://ghproxy.net/https://github.com/devin2255/bitan-pond/releases/download/v1.1.3/Tangli-v1.1.3-Windows-x64.exe) · [GitHub](https://github.com/devin2255/bitan-pond/releases/tag/v1.1.3)。镜像由第三方提供，无法保证持续可用。
 
 发行维护步骤及签名密钥保管方式见 [国内更新发布](docs/国内更新发布.md)。
 

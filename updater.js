@@ -5,10 +5,10 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { verifyFeed, httpsURL, MAX_MANIFEST_BYTES } = require("./update-feed");
-const UPDATE_CHANNEL = require("./update-channel.json");
+const { createSettings } = require("./update-settings");
+const UPDATE_CHANNEL = createSettings(require("./update-channel.json"));
 
-const RELEASE_API = "https://api.github.com/repos/devin2255/bitan-pond/releases/latest";
-const REPOSITORY = "https://github.com/devin2255/bitan-pond";
+const REPOSITORY = UPDATE_CHANNEL.repository;
 const MAX_UPDATE_BYTES = 700 * 1024 * 1024;
 
 function parseVersion(value) {
@@ -27,44 +27,15 @@ function compareVersions(left, right) {
   return 0;
 }
 
-function parseRelease(release, currentVersion) {
-  if (!release || release.draft !== false || release.prerelease !== false || !parseVersion(release.tag_name)) {
-    throw new Error("更新信息不是有效的正式版本");
-  }
-  const version = release.tag_name.replace(/^v/, "");
-  if (compareVersions(version, currentVersion) <= 0) return null;
-  const tag = release.tag_name;
-  const expectedName = `Tangli-v${version}-Windows-x64.exe`;
-  const asset = Array.isArray(release.assets) ? release.assets.find((item) => item && item.name === expectedName && item.state === "uploaded") : null;
-  if (!asset) throw new Error("新版本尚未提供 Windows 更新包");
-  const digest = /^sha256:([a-f0-9]{64})$/i.exec(String(asset.digest || ""));
-  if (!digest) throw new Error("更新包缺少可信的 SHA-256 校验值");
-  if (!Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > MAX_UPDATE_BYTES) {
-    throw new Error("更新包大小不正确");
-  }
-  const expectedURL = `${REPOSITORY}/releases/download/${tag}/${expectedName}`;
-  if (asset.browser_download_url !== expectedURL) throw new Error("更新包地址不属于官方发行版");
-  return Object.freeze({
-    version,
-    tag,
-    name: expectedName,
-    size: asset.size,
-    sha256: digest[1].toLowerCase(),
-    url: expectedURL,
-    releaseURL: `${REPOSITORY}/releases/tag/${tag}`,
-    notes: String(release.body || "").slice(0, 1200).trim(),
-  });
-}
-
 function timedSignal(timeout) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-  if (timer.unref) timer.unref();
-  return { signal: controller.signal, done: () => clearTimeout(timer) };
+  const timer = Number.isFinite(timeout) && timeout > 0 ? setTimeout(() => controller.abort(), timeout) : null;
+  if (timer && timer.unref) timer.unref();
+  return { signal: controller.signal, done: () => { if (timer) clearTimeout(timer); } };
 }
 
 function parseDomesticRelease(envelope, currentVersion, channel) {
-  if (!channel || typeof channel.publicKey !== "string") throw new Error("国内更新源尚未配置");
+  if (!channel || typeof channel.publicKey !== "string") throw new Error("更新签名公钥尚未配置");
   const release = verifyFeed(envelope, channel.publicKey, { parseVersion, compareVersions, maxUpdateBytes: MAX_UPDATE_BYTES, currentVersion });
   if (!release) return null;
   return Object.freeze({ ...release,
@@ -92,40 +63,26 @@ async function boundedJSON(response, maxBytes) {
   } finally { if (!done) await reader.cancel().catch(() => {}); }
 }
 
-async function checkGithub(fetch, currentVersion, timeout) {
-  const timer = timedSignal(timeout);
-  try {
-    const response = await fetch(RELEASE_API, {
-      headers: { Accept: "application/vnd.github+json", "User-Agent": "Tangli-Updater" },
-      cache: "no-store", signal: timer.signal,
-    });
-    if (!response.ok) throw new Error(`检查更新失败（HTTP ${response.status}）`);
-    return parseRelease(await boundedJSON(response, 1024 * 1024), currentVersion);
-  } finally { timer.done(); }
-}
-
-async function checkDomestic(fetch, currentVersion, timeout, channel, feedUrl) {
+async function checkFeed(fetch, currentVersion, timeout, channel, feedUrl) {
   const url = httpsURL(feedUrl);
   const timer = timedSignal(timeout);
   try {
     const response = await fetch(url, { headers: { "User-Agent": "Tangli-Updater" }, cache: "no-store", signal: timer.signal });
-    if (!response.ok) throw new Error(`检查国内更新失败（HTTP ${response.status}）`);
+    if (!response.ok) throw new Error(`检查更新失败（HTTP ${response.status}）`);
     const envelope = await boundedJSON(response, MAX_MANIFEST_BYTES * 2);
     return parseDomesticRelease(envelope, currentVersion, channel);
   } finally { timer.done(); }
 }
 
-async function checkForUpdate(fetch, currentVersion, timeout = 20000, channel = UPDATE_CHANNEL.domestic) {
-  const checks = [];
-  if (channel) {
-    const feedUrls = Array.isArray(channel.feedUrls) ? channel.feedUrls : [channel.feedUrl];
-    for (const url of feedUrls.slice(0, 4)) checks.push(checkDomestic(fetch, currentVersion, Math.min(timeout, 12000), channel, url));
-  }
-  checks.push(checkGithub(fetch, currentVersion, channel ? Math.min(timeout, 8000) : timeout));
+async function checkForUpdate(fetch, currentVersion, timeout = 5000, channel = UPDATE_CHANNEL) {
+  if (!channel || !channel.publicKey) throw new Error("更新签名公钥尚未配置");
+  const feedUrls = Array.isArray(channel.feedUrls) ? channel.feedUrls : [channel.feedUrl];
+  if (!feedUrls.length || feedUrls.length > 10) throw new Error("更新清单地址无效");
+  const checks = feedUrls.map((url) => checkFeed(fetch, currentVersion, timeout, channel, url));
   const results = await Promise.allSettled(checks);
   const releases = results.filter((result) => result.status === "fulfilled" && result.value).map((result) => result.value);
-  // On equal versions prefer the authenticated domestic download parts.
-  releases.sort((a, b) => compareVersions(b.version, a.version) || Number(!!b.parts) - Number(!!a.parts));
+  // Query concurrently so a stale mirror cannot hide a newer signed release.
+  releases.sort((a, b) => compareVersions(b.version, a.version));
   if (releases.length) return releases[0];
   if (results.some((result) => result.status === "fulfilled")) return null;
   throw results[0].reason;
@@ -220,12 +177,11 @@ async function downloadSource(fetch, file, parts, verified, timer, idleTimeout, 
   }
 }
 
-async function downloadUpdate(fetch, release, { tempRoot = os.tmpdir(), onProgress = () => {}, timeout = 90 * 60 * 1000,
-  idleTimeout = 20000, channel = UPDATE_CHANNEL.domestic } = {}) {
-  // Revalidate all fields, including the signed mirror metadata, before download.
-  const verified = release.signedEnvelope ? parseDomesticRelease(release.signedEnvelope, "0.0.0", channel) :
-    parseRelease({ tag_name: release.tag, draft: false, prerelease: false, body: release.notes,
-      assets: [{ name: release.name, state: "uploaded", size: release.size, digest: `sha256:${release.sha256}`, browser_download_url: release.url }] }, "0.0.0");
+async function downloadUpdate(fetch, release, { tempRoot = os.tmpdir(), onProgress = () => {}, timeout = null,
+  idleTimeout = 20000, channel = UPDATE_CHANNEL } = {}) {
+  // Every source, including GitHub itself, must be bound to our signed manifest.
+  if (!release || !release.signedEnvelope) throw new Error("更新信息缺少项目签名");
+  const verified = parseDomesticRelease(release.signedEnvelope, "0.0.0", channel);
   if (!verified) throw new Error("更新信息无效");
   const dir = await fs.promises.mkdtemp(path.join(tempRoot, "tangli-update-"));
   const file = path.join(dir, "update.exe");
@@ -257,4 +213,4 @@ async function downloadUpdate(fetch, release, { tempRoot = os.tmpdir(), onProgre
   }
 }
 
-module.exports = { RELEASE_API, MAX_UPDATE_BYTES, parseVersion, compareVersions, parseRelease, parseDomesticRelease, checkForUpdate, downloadUpdate };
+module.exports = { MAX_UPDATE_BYTES, parseVersion, compareVersions, parseDomesticRelease, checkForUpdate, downloadUpdate };

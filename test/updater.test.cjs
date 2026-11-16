@@ -7,23 +7,19 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
-const { compareVersions, parseRelease, parseDomesticRelease, checkForUpdate, downloadUpdate, RELEASE_API } = require("../updater");
+const { compareVersions, parseDomesticRelease, checkForUpdate, downloadUpdate } = require("../updater");
+const { createSettings, partURLs } = require("../update-settings");
+const { verifyPrepared } = require("../tools/verify-update-release.cjs");
+const { inspectAssets } = require("../tools/publish-update-release.cjs");
 
 const contents = Buffer.from("MZ test release executable");
 const digest = (data) => crypto.createHash("sha256").update(data).digest("hex");
-function release(version = "1.2.0", data = contents) {
-  const tag = `v${version}`, name = `Tangli-v${version}-Windows-x64.exe`;
-  return { tag_name: tag, draft: false, prerelease: false, body: "Release notes", assets: [{
-    name, state: "uploaded", size: data.length, digest: `sha256:${digest(data)}`,
-    browser_download_url: `https://github.com/devin2255/bitan-pond/releases/download/${tag}/${name}`,
-  }] };
-}
-function domesticFixture(version = "1.2.0") {
+function domesticFixture(version = "1.2.0", data = contents) {
   const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
   const channel = { feedUrl: "https://mirror.example.com/latest.json", publicKey: publicKey.export({ type: "spki", format: "pem" }) };
-  const buffers = [contents.subarray(0, 8), contents.subarray(8)];
-  const manifest = { format: 1, version, name: `Tangli-v${version}-Windows-x64.exe`, size: contents.length,
-    sha256: digest(contents), notes: "Domestic release", parts: buffers.map((part, index) => ({
+  const buffers = [data.subarray(0, 8), data.subarray(8)];
+  const manifest = { format: 1, version, name: `Tangli-v${version}-Windows-x64.exe`, size: data.length,
+    sha256: digest(data), notes: "Domestic release", parts: buffers.map((part, index) => ({
       url: `https://mirror.example.com/v${version}/part-${index + 1}`, size: part.length, sha256: digest(part),
     })) };
   const sign = (value) => {
@@ -48,58 +44,97 @@ async function tempRoot(t) {
   return root;
 }
 
+test("derives all endpoints and release part URLs from one validated configuration", () => {
+  const fixture = domesticFixture();
+  const config = { repository: "https://github.com/example/pond", legacyBranch: "main", legacyPath: "latest.json",
+    mirrors: ["https://mirror.example.com", "https://backup.example.com"], publicKey: fixture.channel.publicKey };
+  const settings = createSettings(config);
+  assert.deepEqual(settings.feedUrls, [
+    "https://github.com/example/pond/releases/latest/download/latest.json",
+    "https://mirror.example.com/https://github.com/example/pond/releases/latest/download/latest.json",
+    "https://backup.example.com/https://github.com/example/pond/releases/latest/download/latest.json",
+    "https://mirror.example.com/https://raw.githubusercontent.com/example/pond/main/latest.json",
+    "https://backup.example.com/https://raw.githubusercontent.com/example/pond/main/latest.json",
+    "https://raw.githubusercontent.com/example/pond/main/latest.json",
+  ]);
+  assert.deepEqual(partURLs(settings, "1.2.0", "part-001"), [
+    "https://mirror.example.com/https://github.com/example/pond/releases/download/v1.2.0/part-001",
+    "https://backup.example.com/https://github.com/example/pond/releases/download/v1.2.0/part-001",
+  ]);
+  assert.throws(() => createSettings({ ...config, mirrors: ["http://mirror.example.com"] }), /镜像地址无效/);
+  assert.throws(() => createSettings({ ...config, mirrors: [config.mirrors[0], config.mirrors[0]] }), /重复/);
+  assert.throws(() => createSettings({ ...config, legacyPath: "../other.json" }), /旧版/);
+  assert.throws(() => createSettings({ ...config, publicKey: "invalid" }), /公钥/);
+});
+
+test("only accepts release assets whose names, sizes and hashes match", () => {
+  const expected = [{ name: "latest.json", size: 3, sha256: "a".repeat(64) }, { name: "part-001", size: 5, sha256: "b".repeat(64) }];
+  const valid = expected.map((item) => ({ ...item, state: "uploaded", digest: `sha256:${item.sha256}` }));
+  assert.deepEqual(inspectAssets(valid, expected), []);
+  assert.deepEqual(inspectAssets(valid.slice(0, 1), expected), [expected[1]]);
+  assert.throws(() => inspectAssets([{ ...valid[0], digest: `sha256:${"0".repeat(64)}` }], expected), /不一致/);
+  assert.throws(() => inspectAssets([...valid, { name: "unexpected" }], expected), /未预期/);
+});
+
 test("compares stable numeric versions and never offers a downgrade", () => {
   assert.equal(compareVersions("v1.10.0", "1.2.9"), 1);
   assert.equal(compareVersions("1.2.0", "v1.2.0"), 0);
-  assert.equal(parseRelease(release("1.2.0"), "1.2.0"), null);
-  assert.equal(parseRelease(release("1.2.0"), "2.0.0"), null);
+  const fixture = domesticFixture();
+  assert.equal(parseDomesticRelease(fixture.envelope, "1.2.0", fixture.channel), null);
+  assert.equal(parseDomesticRelease(fixture.envelope, "2.0.0", fixture.channel), null);
   assert.throws(() => compareVersions("v1.2.0-beta", "1.2.0"));
 });
 
-test("accepts only the expected official release and a verified digest", () => {
-  const item = parseRelease(release(), "1.0.0");
+test("requires a signed version and rejects relabelled old packages", () => {
+  const fixture = domesticFixture();
+  const item = parseDomesticRelease(fixture.envelope, "1.0.0", fixture.channel);
   assert.equal(item.version, "1.2.0");
   assert.equal(item.sha256, digest(contents));
-  const hostile = release(); hostile.assets[0].browser_download_url = "https://example.com/update.exe";
-  assert.throws(() => parseRelease(hostile, "1.0.0"), /官方发行版/);
-  const missingDigest = release(); missingDigest.assets[0].digest = null;
-  assert.throws(() => parseRelease(missingDigest, "1.0.0"), /SHA-256/);
-  const draft = release(); draft.draft = true;
-  assert.throws(() => parseRelease(draft, "1.0.0"), /正式版本/);
+  const altered = { ...fixture.manifest, version: "9.0.0", name: "Tangli-v9.0.0-Windows-x64.exe" };
+  const tampered = { ...fixture.envelope, payload: Buffer.from(JSON.stringify(altered)).toString("base64") };
+  assert.throws(() => parseDomesticRelease(tampered, "1.0.0", fixture.channel), /签名无效/);
 });
 
-test("fetches official release metadata and reports a failed request", async () => {
+test("requires a signed official feed and reports a failed request", async () => {
+  const fixture = domesticFixture();
   const found = await checkForUpdate(async (url) => {
-    assert.equal(url, RELEASE_API);
-    return new Response(JSON.stringify(release()), { status: 200 });
-  }, "1.0.0", 2000, null);
+    assert.equal(url, fixture.channel.feedUrl);
+    return new Response(JSON.stringify(fixture.envelope), { status: 200 });
+  }, "1.0.0", 2000, fixture.channel);
   assert.equal(found.version, "1.2.0");
-  await assert.rejects(checkForUpdate(async () => new Response("", { status: 503 }), "1.0.0", 2000, null), /503/);
+  await assert.rejects(checkForUpdate(async () => new Response("", { status: 503 }), "1.0.0", 2000, fixture.channel), /503/);
+  await assert.rejects(downloadUpdate(async () => { throw new Error("must not fetch"); }, { version: "1.2.0", sha256: digest(contents) }), /缺少项目签名/);
 });
 
 test("streams and verifies the executable before returning it", async (t) => {
-  const root = await tempRoot(t), progress = [];
-  const item = parseRelease(release(), "1.0.0");
-  const result = await downloadUpdate(async () => new Response(contents, { headers: { "content-length": String(contents.length) } }), item,
-    { tempRoot: root, onProgress: (value) => progress.push(value) });
+  const root = await tempRoot(t), progress = [], fixture = domesticFixture();
+  const item = parseDomesticRelease(fixture.envelope, "1.0.0", fixture.channel);
+  const result = await downloadUpdate(async (url) => {
+    const index = fixture.manifest.parts.findIndex((part) => part.url === url);
+    assert.notEqual(index, -1);
+    return new Response(fixture.buffers[index]);
+  }, item, { tempRoot: root, channel: fixture.channel, onProgress: (value) => progress.push(value) });
   assert.deepEqual(await fs.promises.readFile(result.file), contents);
   assert.equal(result.sha256, digest(contents));
   assert.equal(progress.at(-1), 100);
 });
 
 test("removes incomplete or altered downloads and preserves the existing app", async (t) => {
-  const root = await tempRoot(t), item = parseRelease(release(), "1.0.0");
+  const root = await tempRoot(t), fixture = domesticFixture(), item = parseDomesticRelease(fixture.envelope, "1.0.0", fixture.channel);
   const original = path.join(root, "existing.exe");
   await fs.promises.writeFile(original, "original");
-  await assert.rejects(downloadUpdate(async () => new Response(Buffer.from("MZ altered executable!!")), item, { tempRoot: root }), /校验失败/);
+  await assert.rejects(downloadUpdate(async () => new Response(Buffer.from("MZ altered executable!!")), item, { tempRoot: root, channel: fixture.channel }), /校验失败|超过/);
   assert.equal(await fs.promises.readFile(original, "utf8"), "original");
   assert.deepEqual(await fs.promises.readdir(root), ["existing.exe"]);
 });
 
 test("rejects data that is not an executable even when its hash matches", async (t) => {
   const root = await tempRoot(t), html = Buffer.from("<html>not an executable</html>");
-  const item = parseRelease(release("1.2.0", html), "1.0.0");
-  await assert.rejects(downloadUpdate(async () => new Response(html), item, { tempRoot: root }), /Windows 程序/);
+  const fixture = domesticFixture("1.2.0", html), item = parseDomesticRelease(fixture.envelope, "1.0.0", fixture.channel);
+  await assert.rejects(downloadUpdate(async (url) => {
+    if (url.startsWith("https://github.com/")) return new Response(html);
+    return new Response(fixture.buffers[fixture.manifest.parts.findIndex((part) => part.url === url)]);
+  }, item, { tempRoot: root, channel: fixture.channel }), /Windows 程序/);
   assert.deepEqual(await fs.promises.readdir(root), []);
 });
 
@@ -108,7 +143,7 @@ test("uses a signed domestic feed and downloads its parts when GitHub is unavail
   const fetch = async (url) => {
     calls.push(url);
     if (url === fixture.channel.feedUrl) return new Response(JSON.stringify(fixture.envelope));
-    if (url === RELEASE_API || url.startsWith("https://github.com/")) throw new Error("GitHub unreachable");
+    if (url.startsWith("https://github.com/")) throw new Error("GitHub unreachable");
     const index = fixture.manifest.parts.findIndex((part) => part.url === url);
     assert.notEqual(index, -1);
     return new Response(fixture.buffers[index]);
@@ -167,26 +202,59 @@ test("finds the update through the second feed when the first feed and GitHub ar
   assert.ok(item.parts);
 });
 
-test("rejects tampered or malformed signed metadata, then uses the official source", async () => {
+test("times out a dead check endpoint and still accepts another signed feed", async (t) => {
+  const fixture = domesticFixture(), channel = { ...fixture.channel,
+    feedUrls: ["https://dead.example.com/latest.json", fixture.channel.feedUrl] };
+  const keepAlive = setTimeout(() => {}, 1000);
+  t.after(() => clearTimeout(keepAlive));
+  const item = await checkForUpdate((url, options) => {
+    if (url === fixture.channel.feedUrl) return Promise.resolve(new Response(JSON.stringify(fixture.envelope)));
+    return new Promise((resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("timed out")), { once: true }));
+  }, "1.0.0", 30, channel);
+  assert.equal(item.version, "1.2.0");
+});
+
+test("allows a slow transfer that keeps making progress beyond the idle interval", async (t) => {
+  const root = await tempRoot(t), fixture = domesticFixture();
+  const manifest = { ...fixture.manifest, parts: [{ url: "https://mirror.example.com/slow", size: contents.length, sha256: digest(contents) }] };
+  const item = parseDomesticRelease(fixture.sign(manifest), "1.0.0", fixture.channel);
+  const result = await downloadUpdate(async () => {
+    let offset = 0, interval;
+    return new Response(new ReadableStream({
+      start(controller) {
+        interval = setInterval(() => {
+          if (offset >= contents.length) { clearInterval(interval); controller.close(); return; }
+          const next = Math.min(contents.length, offset + 4);
+          controller.enqueue(contents.subarray(offset, next)); offset = next;
+        }, 20);
+      },
+      cancel() { clearInterval(interval); },
+    }));
+  }, item, { tempRoot: root, channel: fixture.channel, idleTimeout: 70 });
+  assert.deepEqual(await fs.promises.readFile(result.file), contents);
+});
+
+test("rejects tampered metadata from one source and uses a valid signed source", async () => {
   const fixture = domesticFixture(), altered = { ...fixture.manifest, size: fixture.manifest.size + 1 };
   const tampered = { ...fixture.envelope, payload: Buffer.from(JSON.stringify(altered)).toString("base64") };
   assert.throws(() => parseDomesticRelease(tampered, "1.0.0", fixture.channel), /签名无效/);
   const invalidParts = fixture.sign({ ...fixture.manifest, parts: [{ ...fixture.manifest.parts[0], url: "http://mirror.example.com/unsafe" }] });
   assert.throws(() => parseDomesticRelease(invalidParts, "1.0.0", fixture.channel), /地址无效/);
-  const item = await checkForUpdate(async (url) => url === RELEASE_API ?
-    new Response(JSON.stringify(release())) : new Response(JSON.stringify(tampered)), "1.0.0", 2000, fixture.channel);
+  const channel = { ...fixture.channel, feedUrls: ["https://official.example.com/latest.json", fixture.channel.feedUrl] };
+  const item = await checkForUpdate(async (url) => url === fixture.channel.feedUrl ?
+    new Response(JSON.stringify(fixture.envelope)) : new Response(JSON.stringify(tampered)), "1.0.0", 2000, channel);
   assert.equal(item.version, "1.2.0");
-  assert.equal(item.parts, undefined);
+  assert.ok(item.parts);
 });
 
-test("prefers the newest valid version and prefers the domestic parts for matching versions", async () => {
+test("chooses the newest signed version across concurrent sources", async () => {
   const fixture = domesticFixture();
-  const check = (githubVersion) => checkForUpdate(async (url) => new Response(JSON.stringify(
-    url === RELEASE_API ? release(githubVersion) : fixture.envelope)), "1.0.0", 2000, fixture.channel);
-  assert.ok((await check("1.2.0")).parts);
-  const newer = await check("1.3.0");
+  const channel = { ...fixture.channel, feedUrls: ["https://official.example.com/latest.json", fixture.channel.feedUrl] };
+  const newerManifest = { ...fixture.manifest, version: "1.3.0", name: "Tangli-v1.3.0-Windows-x64.exe" };
+  const newer = await checkForUpdate(async (url) => new Response(JSON.stringify(
+    url === fixture.channel.feedUrl ? fixture.envelope : fixture.sign(newerManifest))), "1.0.0", 2000, channel);
   assert.equal(newer.version, "1.3.0");
-  assert.equal(newer.parts, undefined);
+  assert.ok(newer.parts);
 });
 
 test("restarts a corrupted domestic download from the verified GitHub package", async (t) => {
@@ -257,21 +325,27 @@ test("cannot install a changed or unauthenticated domestic update", async (t) =>
 });
 
 test("release preparation signs a complete manifest using an external private key", async (t) => {
-  const root = await tempRoot(t), key = path.join(root, "private.pem"), executable = path.join(root, "release.exe");
+  const root = await tempRoot(t), key = path.join(root, "private.pem"), executable = path.join(root, "Tangli-v1.2.0-Windows-x64.exe");
   const output = path.join(root, "out"), tool = path.resolve(__dirname, "../tools/prepare-domestic-update.cjs");
   await fs.promises.writeFile(executable, contents);
   const generated = spawnSync(process.execPath, [tool, "keygen", key], { encoding: "utf8" });
   assert.equal(generated.status, 0, generated.stderr);
   const privateKey = crypto.createPrivateKey(await fs.promises.readFile(key));
-  const channel = { publicKey: crypto.createPublicKey(privateKey).export({ type: "spki", format: "pem" }) };
+  const channel = { publicKey: crypto.createPublicKey(privateKey).export({ type: "spki", format: "pem" }),
+    repository: "https://github.com/example/pond", legacyBranch: "main", legacyPath: "latest.json",
+    mirrors: ["https://mirror.example.com"] };
   const channelFile = path.join(root, "channel.json");
-  await fs.promises.writeFile(channelFile, JSON.stringify({ domestic: channel }));
-  const prepared = spawnSync(process.execPath, [tool, "build", executable, "1.2.0", "https://mirror.example.com/v1.2.0", output, key, "", channelFile], { encoding: "utf8" });
+  await fs.promises.writeFile(channelFile, JSON.stringify(channel));
+  const prepared = spawnSync(process.execPath, [tool, "build", executable, "1.2.0", output, key, "", channelFile], { encoding: "utf8" });
   assert.equal(prepared.status, 0, prepared.stderr);
   const envelope = JSON.parse(await fs.promises.readFile(path.join(output, "latest.json"), "utf8"));
   const item = parseDomesticRelease(envelope, "1.0.0", channel);
   assert.equal(item.sha256, digest(contents));
   assert.deepEqual(await fs.promises.readFile(path.join(output, path.basename(new URL(item.parts[0].urls[0]).pathname))), contents);
+  const settings = createSettings(channel);
+  assert.equal((await verifyPrepared({ executable, directory: output, version: "1.2.0", settings })).sha256, digest(contents));
+  await fs.promises.writeFile(path.join(output, "SHA256SUMS.txt"), "wrong checksum\n");
+  await assert.rejects(verifyPrepared({ executable, directory: output, version: "1.2.0", settings }), /SHA256SUMS/);
 });
 
 test("portable replacement keeps the old file when validation fails", { skip: process.platform !== "win32" }, async (t) => {

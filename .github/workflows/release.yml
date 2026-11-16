@@ -1,0 +1,83 @@
+name: Publish Tangli
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag, for example v1.1.3'
+        required: true
+        type: string
+
+concurrency:
+  group: tangli-production-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Check version and install dependencies
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($env:RELEASE_TAG -notmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') { throw 'Invalid release tag' }
+          $version = (Get-Content -Raw package.json | ConvertFrom-Json).version
+          if ($env:RELEASE_TAG -ne "v$version") { throw 'Tag and package version do not match' }
+          "TANGLI_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          npm ci
+          npm run check:updates
+          npm test
+      - name: Build release
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $dir = "dist/release-v$env:TANGLI_VERSION"
+          $exe = "$dir/Tangli-v$env:TANGLI_VERSION-Windows-x64.exe"
+          $notes = "docs/releases/v$env:TANGLI_VERSION.md"
+          if (-not (Test-Path -LiteralPath $notes)) { throw "Missing release notes: $notes" }
+          npm run dist -- "--config.directories.output=$dir"
+          Copy-Item -LiteralPath "$dir/塘里.exe" -Destination $exe
+          "TANGLI_RELEASE_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TANGLI_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TANGLI_RELEASE_NOTES=$notes" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Sign and verify release assets
+        env:
+          TANGLI_SIGNING_KEY: ${{ secrets.TANGLI_UPDATE_SIGNING_KEY }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ([string]::IsNullOrWhiteSpace($env:TANGLI_SIGNING_KEY)) { throw 'Missing TANGLI_UPDATE_SIGNING_KEY Actions secret' }
+          $key = Join-Path $env:RUNNER_TEMP 'tangli-update-ed25519.pem'
+          [IO.File]::WriteAllText($key, $env:TANGLI_SIGNING_KEY, [Text.UTF8Encoding]::new($false))
+          $env:TANGLI_SIGNING_KEY = $null
+          node tools/prepare-domestic-update.cjs build $env:TANGLI_EXE $env:TANGLI_VERSION "$env:TANGLI_RELEASE_DIR/domestic" $key $env:TANGLI_RELEASE_NOTES
+          node tools/verify-update-release.cjs $env:TANGLI_EXE "$env:TANGLI_RELEASE_DIR/domestic" $env:TANGLI_VERSION "$env:TANGLI_RELEASE_DIR/win-unpacked/resources/app.asar"
+      - name: Publish verified assets and compatibility feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          node tools/publish-update-release.cjs $env:TANGLI_EXE "$env:TANGLI_RELEASE_DIR/domestic" "$env:TANGLI_RELEASE_DIR/win-unpacked/resources/app.asar" $env:TANGLI_VERSION $env:TANGLI_RELEASE_NOTES
