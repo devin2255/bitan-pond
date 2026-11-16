@@ -1,6 +1,7 @@
 # Runs only on the disposable CI desktop. This checks whether a simple native
 # window can be composited onto the real desktop without involving Chromium.
 $ErrorActionPreference = 'Stop'
+[IO.Directory]::CreateDirectory([IO.Path]::GetFullPath('dist')) | Out-Null
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $file = [IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\wallpaper.ps1'))
