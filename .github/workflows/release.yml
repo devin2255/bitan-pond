@@ -54,7 +54,9 @@ jobs:
         if: ${{ always() && inputs.diagnoseDesktop }}
         with:
           name: desktop-diagnostic
-          path: dist/multiscreen-*.png
+          path: |
+            dist/multiscreen-*.png
+            dist/multiscreen-native-state.txt
           if-no-files-found: ignore
       - name: Check version and install dependencies
         env:

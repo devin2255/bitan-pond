@@ -86,7 +86,8 @@ app.whenReady().then(() => setTimeout(async () => {
     // This deliberately captures the test machine's whole screen only when
     // opted in; regular developer runs do not capture unrelated applications.
     if (process.env.TANGLI_TEST_SCREEN_CAPTURE === "1") {
-      await captureProcess("capture-test-screen.ps1", ["-Output", path.join(output, "multiscreen-screen.png")]);
+      await captureProcess("capture-test-screen.ps1", ["-Output", path.join(output, "multiscreen-screen.png"),
+        "-State", path.join(output, "multiscreen-native-state.txt")]);
     }
     for (const surface of surfaceRanges) assert(surface.range > 24, `Native desktop surface ${surface.index} appears blank (${surface.range})`);
     // Exercise the same physical-to-renderer input route used on the desktop,

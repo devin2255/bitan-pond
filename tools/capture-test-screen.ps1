@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Output)
+param([Parameter(Mandatory=$true)][string]$Output, [Parameter(Mandatory=$true)][string]$State)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
@@ -12,6 +12,7 @@ try { [void][TangliScreenCapture]::SetProcessDpiAwareness(2) } catch { }
 . (Join-Path $PSScriptRoot 'test-desktop-visibility.ps1')
 $minimized = [TangliTestDesktop]::Minimize()
 Start-Sleep -Milliseconds 800
+[IO.File]::WriteAllLines([IO.Path]::GetFullPath($State), [TangliTestDesktop]::DescribeDesktop())
 $rect = [System.Windows.Forms.SystemInformation]::VirtualScreen
 $bitmap = New-Object System.Drawing.Bitmap($rect.Width, $rect.Height)
 $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
