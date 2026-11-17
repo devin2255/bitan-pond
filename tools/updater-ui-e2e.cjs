@@ -61,7 +61,7 @@ async function run() {
   if (setup.error || setup.status !== 0 || !fs.existsSync(target)) throw new Error(`Isolated setup failed: ${setup.error || setup.status}`);
   if (hash(target) === expected) throw new Error("The old installation already matches the expected update");
   const port = await freePort();
-  wrapper = spawn(target, [`--remote-debugging-port=${port}`, `--tangli-e2e=${testId}`], { env, windowsHide: true, stdio: "ignore" });
+  wrapper = spawn(target, [`--remote-debugging-port=${port}`, "--no-proxy-server", `--tangli-e2e=${testId}`], { env, windowsHide: true, stdio: "ignore" });
   wrapper.on("error", (error) => { driverText += `\nlauncher error: ${error.message}`; });
   driver = spawn(ps, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(__dirname, "update-dialog-driver.ps1"), "-TestId", testId],
     { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
