@@ -4,6 +4,9 @@
   [Parameter(Mandatory = $true)][string]$Target,
   [Parameter(Mandatory = $true)][string]$Sha256,
   [Parameter(Mandatory = $true)][string]$ReadyToken,
+  [string]$HandoffFile = "",
+  [string]$CancelFile = "",
+  [string]$CommitFile = "",
   [string]$StatusFile = "",
   [switch]$NoRestart,
   [switch]$NoUserInterface
@@ -17,6 +20,11 @@ $started = $false
 $ready = $null
 $progressWindow = $null
 $progressLabel = $null
+$cancelPath = $null
+$commitPath = $null
+function Stop-IfUpdateCancelled {
+  if ($cancelPath -and [System.IO.File]::Exists($cancelPath)) { throw '更新已取消。' }
+}
 function Save-UpdateStatus([string]$state, [string]$detail = "") {
   if (-not $StatusFile) { return }
   try {
@@ -69,13 +77,30 @@ try {
   $stage = [System.IO.Path]::Combine($dir, '.tangli-update-' + $id + '.tmp')
   $backup = [System.IO.Path]::Combine($dir, '.tangli-previous-' + $id + '.exe')
   $ready = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'tangli-update-ready-' + $ReadyToken + '.ok')
+  if ($CancelFile) {
+    $cancelPath = [System.IO.Path]::GetFullPath($CancelFile)
+    if ([System.IO.Path]::GetDirectoryName($cancelPath) -ine [System.IO.Path]::GetDirectoryName($sourcePath)) { throw 'Invalid update cancellation path.' }
+  }
+  if ($CommitFile) {
+    $commitPath = [System.IO.Path]::GetFullPath($CommitFile)
+    if ([System.IO.Path]::GetDirectoryName($commitPath) -ine [System.IO.Path]::GetDirectoryName($sourcePath)) { throw 'Invalid update confirmation path.' }
+  }
+  Stop-IfUpdateCancelled
+  if ($HandoffFile) {
+    $handoffPath = [System.IO.Path]::GetFullPath($HandoffFile)
+    if ([System.IO.Path]::GetDirectoryName($handoffPath) -ine [System.IO.Path]::GetDirectoryName($sourcePath)) { throw 'Invalid update handoff path.' }
+    [System.IO.File]::WriteAllText($handoffPath, $ReadyToken, [System.Text.Encoding]::ASCII)
+  }
 
   Set-UpdateProgress '正在关闭旧版本，请稍候…'
   $deadline = [DateTime]::UtcNow.AddSeconds(120)
   while (Get-Process -Id $ParentId -ErrorAction SilentlyContinue) {
+    Stop-IfUpdateCancelled
     if ([DateTime]::UtcNow -ge $deadline) { throw '旧版本未能关闭，请退出塘里后重试。' }
     Wait-UpdateTick 250
   }
+  Stop-IfUpdateCancelled
+  if ($commitPath -and (-not [System.IO.File]::Exists($commitPath) -or [System.IO.File]::ReadAllText($commitPath) -cne $ReadyToken)) { throw '更新未确认，原程序没有更改。' }
   Set-UpdateProgress '正在校验更新文件，请稍候…'
   Save-UpdateStatus 'verifying'
   [System.IO.File]::Copy($sourcePath, $stage, $false)
@@ -133,7 +158,8 @@ try {
     } catch { $message += "`n旧版备份位置：" + $backup }
   }
   Save-UpdateStatus 'failed' $message
-  if (-not $NoRestart -and -not $NoUserInterface) {
+  $parentRunning = [bool](Get-Process -Id $ParentId -ErrorAction SilentlyContinue)
+  if (-not $NoRestart -and -not $NoUserInterface -and (-not $HandoffFile -or -not $parentRunning)) {
     if ($progressWindow) { $progressWindow.TopMost = $false; $progressWindow.Activate() }
     try { Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show("塘里更新未完成。`n" + $message, '塘里更新') | Out-Null } catch { }
     if (-not $started -and $targetPath -and [System.IO.File]::Exists($targetPath)) {

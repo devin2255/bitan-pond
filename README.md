@@ -53,7 +53,9 @@ npm start
 
 从 v1.1.3 开始，官方和镜像更新源都必须通过项目签名验证；签名绑定版本号、分片和完整程序的哈希。更新器并发检查多个来源，并行下载分片，某个镜像失败时会尝试其他地址。第三方镜像可以在部分无法直连 GitHub 的网络环境下使用，但不承诺长期可用或在所有网络中可达。v1.1.0 和更早版本在无法直连 GitHub 时需要先手动下载新版。
 
-首次下载 v1.1.8 安装版：[镜像一](https://gh-proxy.com/https://github.com/devin2255/bitan-pond/releases/download/v1.1.8/Tangli-v1.1.8-Setup.exe) · [镜像二](https://ghproxy.net/https://github.com/devin2255/bitan-pond/releases/download/v1.1.8/Tangli-v1.1.8-Setup.exe) · [GitHub](https://github.com/devin2255/bitan-pond/releases/tag/v1.1.8)。镜像由第三方提供，无法保证持续可用。
+首次下载 v1.1.9 安装版：[镜像一](https://gh-proxy.com/https://github.com/devin2255/bitan-pond/releases/download/v1.1.9/Tangli-v1.1.9-Setup.exe) · [镜像二](https://ghproxy.net/https://github.com/devin2255/bitan-pond/releases/download/v1.1.9/Tangli-v1.1.9-Setup.exe) · [GitHub](https://github.com/devin2255/bitan-pond/releases/tag/v1.1.9)。镜像由第三方提供，无法保证持续可用。
+
+v1.1.8 及更早版本可能在确认在线更新后只关闭窗口。遇到这个问题时，请先通过托盘退出旧版，再手动运行 v1.1.9 安装包；池塘设置会保留。此后可以继续使用应用内的在线更新。
 
 发行维护步骤及签名密钥保管方式见 [国内更新发布](docs/国内更新发布.md)。
 

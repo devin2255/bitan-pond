@@ -7,6 +7,8 @@ const crypto = require("crypto");
 const { createStabilizer } = require("./media-monitor");
 const { createBeatTracker } = require("./music-beat");
 const { checkForUpdate, downloadUpdate } = require("./updater");
+const { waitForUpdaterHandoff } = require("./update-handoff");
+const { createUpdaterLaunch } = require("./update-launch");
 const { matchDisplays, targetAt, normalizedPoint } = require("./desktop-layout");
 
 app.setName("塘里");
@@ -229,10 +231,11 @@ function refreshTrayMenu() {
   const on = wallpaperOn || fullscreenFallback;
   const updateLabel = updatePhase === "checking" ? "正在检查更新…" :
     updatePhase === "downloading" ? `正在下载更新 ${updatePercent}%` :
+    updatePhase === "installing" ? "正在启动更新…" :
     updatePhase === "ready" || updatePhase === "confirming" ? `安装更新 v${updateDownload.version}…` : "检查更新…";
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: on ? "恢复窗口" : "铺到桌面", click: () => toggleWallpaper() },
-    { label: updateLabel, enabled: !["checking", "downloading", "prompting", "confirming"].includes(updatePhase), click: () => checkUpdates(true) },
+    { label: updateLabel, enabled: !["checking", "downloading", "prompting", "confirming", "installing"].includes(updatePhase), click: () => checkUpdates(true) },
     { label: `当前版本 ${app.getVersion()}`, enabled: false },
     { type: "separator" },
     { label: "退出", click: () => app.quit() },
@@ -317,8 +320,10 @@ function ensureUpdatedPortableShortcut() {
 
 async function installDownloadedUpdate() {
   if (!updateDownload || updatePhase !== "ready") return;
+  setUpdatePhase("installing");
   const target = portableExecutable();
   if (!target) {
+    setUpdatePhase("ready");
     await message({ type: "info", message: "当前运行方式不支持替换程序", detail: "请打开发行页面下载 Windows 便携版。", buttons: ["打开下载页面", "取消"], cancelId: 1 }).then((answer) => {
       if (answer.response === 0 && updateRelease) return shell.openExternal(updateRelease.releaseURL);
     });
@@ -333,16 +338,39 @@ async function installDownloadedUpdate() {
     const helper = path.join(updateDownload.dir, "portable-update.ps1");
     await fs.promises.copyFile(path.join(__dirname, "portable-update.ps1"), helper);
     const token = crypto.randomBytes(16).toString("hex");
-    const child = spawn(psExe(), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", helper,
-      "-ParentId", String(process.pid), "-Source", updateDownload.file, "-Target", target,
-      "-Sha256", updateDownload.sha256, "-ReadyToken", token,
-      "-StatusFile", path.join(app.getPath("userData"), "update-status.json")],
-    { detached: true, windowsHide: true, stdio: "ignore" });
+    const handoff = path.join(updateDownload.dir, `handoff-${token}.txt`);
+    const cancel = path.join(updateDownload.dir, `cancel-${token}.txt`);
+    const commit = path.join(updateDownload.dir, `commit-${token}.txt`);
+    const launch = createUpdaterLaunch(psExe(), helper, {
+      ParentId: process.pid, Source: updateDownload.file, Target: target,
+      Sha256: updateDownload.sha256, ReadyToken: token, HandoffFile: handoff, CancelFile: cancel, CommitFile: commit,
+      StatusFile: path.join(app.getPath("userData"), "update-status.json"),
+    });
+    // Retain the helper's diagnostics if Windows rejects its startup.
+    const log = fs.openSync(path.join(app.getPath("userData"), "update-helper.log"), "w");
+    let child;
+    try {
+      child = spawn(launch.executable, launch.args, { detached: true, windowsHide: true,
+        windowsVerbatimArguments: true, cwd: app.getPath("userData"), env: launch.env, stdio: ["ignore", log, log] });
+    } finally { fs.closeSync(log); }
     await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+    try {
+      await waitForUpdaterHandoff(child, handoff, token);
+      await fs.promises.writeFile(commit, token, { encoding: "ascii", flag: "wx" });
+    }
+    catch (error) {
+      await fs.promises.writeFile(cancel, token, "ascii").catch(() => {});
+      try { child.kill(); } catch (_) {}
+      throw error;
+    }
     child.unref();
     app.quit();
   } catch (error) {
-    await message({ type: "error", message: "无法安装更新", detail: `原程序没有改变。请检查程序所在目录是否有写入权限。\n${error.message}`, buttons: ["知道了"] });
+    setUpdatePhase("ready");
+    const answer = await message({ type: "error", message: "更新助手未能启动",
+      detail: `当前版本仍在运行。可以稍后重试，或手动下载安装包。\n${error.message}\n日志：${path.join(app.getPath("userData"), "update-helper.log")}`,
+      buttons: updateRelease ? ["打开下载页面", "稍后"] : ["知道了"], cancelId: updateRelease ? 1 : 0 });
+    if (answer.response === 0 && updateRelease) await shell.openExternal(updateRelease.releaseURL);
   }
 }
 
@@ -350,7 +378,7 @@ async function offerInstall() {
   if (!updateDownload) return;
   setUpdatePhase("confirming");
   const answer = await message({ type: "info", message: `塘里 v${updateDownload.version} 已下载`,
-    detail: "更新包已完成校验。重启后会替换当前便携版，并保留池塘设置。", buttons: ["立即重启并更新", "稍后"], defaultId: 0, cancelId: 1 });
+    detail: "更新包已完成校验。重启后会更新当前程序，并保留池塘设置。", buttons: ["立即重启并更新", "稍后"], defaultId: 0, cancelId: 1 });
   setUpdatePhase("ready");
   if (answer.response === 0) await installDownloadedUpdate();
 }
@@ -358,8 +386,9 @@ async function offerInstall() {
 async function checkUpdates(interactive = false) {
   if (updatePhase === "ready") { if (interactive) await offerInstall(); return; }
   if (["prompting", "confirming"].includes(updatePhase)) return;
-  if (updatePhase === "checking" || updatePhase === "downloading") {
-    if (interactive) await message({ type: "info", message: updatePhase === "checking" ? "正在检查更新" : `正在下载更新（${updatePercent}%）`, buttons: ["知道了"] });
+  if (["checking", "downloading", "installing"].includes(updatePhase)) {
+    if (interactive) await message({ type: "info", message: updatePhase === "checking" ? "正在检查更新" :
+      updatePhase === "installing" ? "正在启动更新，请稍候" : `正在下载更新（${updatePercent}%）`, buttons: ["知道了"] });
     return;
   }
   setUpdatePhase("checking");
