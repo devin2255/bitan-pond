@@ -99,12 +99,15 @@
     const spring = rank < 0.7 ? w.spring : 0;
     const autumn = rank < 0.82 ? w.autumn : 0;
     const winter = rank < 0.13 ? w.winter : 0;
-    const alpha = spring + w.summer + autumn + winter;
-    if (alpha < 0.001) return { alpha: 0, scale: 0.65, dry: 0 };
+    const total = spring + w.summer + autumn + winter;
+    if (total < 0.001) return { alpha: 0, scale: 0.65, dry: 0 };
     return {
-      alpha,
-      scale: (spring * 0.72 + w.summer + autumn * 0.92 + winter * 0.68) / alpha,
-      dry: ((dryRank < 0.48 ? autumn : 0) + winter) / alpha,
+      // Canvas ignores globalAlpha outside [0, 1] instead of clamping it.
+      // Floating-point season blends can otherwise leave individual leaves
+      // invisible for a frame when their total is 1 + a tiny rounding error.
+      alpha: clamp(total, 0, 1),
+      scale: (spring * 0.72 + w.summer + autumn * 0.92 + winter * 0.68) / total,
+      dry: clamp(((dryRank < 0.48 ? autumn : 0) + winter) / total, 0, 1),
     };
   }
 
@@ -644,7 +647,7 @@
   function drawLeaves() {
     if (leafRest) {
       const w = seasonWeights || { spring: 0, summer: 1, autumn: 0, winter: 0 };
-      ctx.save(); ctx.globalAlpha = w.summer + w.spring * 0.5 + w.autumn * 0.65 + w.winter * 0.1;
+      ctx.save(); ctx.globalAlpha = clamp(w.summer + w.spring * 0.5 + w.autumn * 0.65 + w.winter * 0.1, 0, 1);
       ctx.drawImage(leafRest, 0, 0, W, H); ctx.restore();
     }
     const order = [];
