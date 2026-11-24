@@ -266,42 +266,77 @@
     });
   }
 
+  let citySearchRevision = 0;
+
+  // Offline index first: every domestic city (including Taiwan) resolves instantly in Chinese.
+  // Open-Meteo geocoding only adds international results when the local index has fewer than six hits.
   async function searchCity() {
     const q = $("city-input").value.trim();
     const box = $("city-results");
     box.textContent = "";
     if (!q) return;
-    const url = "https://geocoding-api.open-meteo.com/v1/search?name=" + encodeURIComponent(q) + "&count=6&language=zh&format=json";
+    const revision = ++citySearchRevision;
+    const cities = window.PondCities;
+    const local = cities ? cities.search(q, 8) : [];
+    const key = (row) => (cities ? cities.key(row.name) : row.name);
+    const shown = (row) => local.some((hit) => key(hit) === key(row) || near(hit, row));
+    renderCityResults(box, local);
+    // A pinyin query with an exact local hit does not need Open-Meteo's fuzzy matches.
+    if (local.length >= 6 || (/^[a-z]+$/i.test(q) && local.length && local[0].score <= 2)) return;
+    // International results arrive later; a level-1 exact hit (or an exact pinyin match) stays above them.
     try {
-      const res = await fetch(url);
-      const data = await res.json();
-      const rows = data.results || [];
-      if (!rows.length) {
-        const empty = document.createElement("div");
-        empty.className = "fine";
-        empty.textContent = "没有找到这个城市";
-        box.appendChild(empty);
-        return;
-      }
-      rows.forEach((row) => {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        const admin = row.admin1 ? " · " + row.admin1 : "";
-        btn.textContent = row.name + admin;
-        btn.addEventListener("click", () => usePlace({
-          name: row.name,
-          lat: row.latitude,
-          lon: row.longitude,
-          tz: row.timezone,
-        }));
-        box.appendChild(btn);
-      });
+      const remote = await fetchRemoteCities(q, 6);
+      if (revision !== citySearchRevision) return;
+      const fresh = remote.filter((row) => !shown(row));
+      const localFirst = local.length && (local[0].score === 0 || local[0].score === 2);
+      renderCityResults(box, (localFirst ? local.concat(fresh) : fresh.concat(local)).slice(0, 8));
     } catch (err) {
+      if (revision !== citySearchRevision) return;
+      if (!local.length) renderCityResults(box, [], "搜索失败，请稍后再试");
+    }
+  }
+
+  // Same place under a different script or spelling (Suqian / 宿迁市): roughly 20 km apart.
+  function near(a, b) {
+    const dy = a.latitude - b.latitude;
+    const dx = (a.longitude - b.longitude) * Math.cos((a.latitude * Math.PI) / 180);
+    return Math.hypot(dx, dy) < 0.2;
+  }
+
+  function fetchRemoteCities(q, count) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    const url = "https://geocoding-api.open-meteo.com/v1/search?name=" + encodeURIComponent(q) +
+      "&count=" + count + "&language=zh&format=json";
+    return fetch(url, { signal: controller.signal })
+      .then((res) => res.json())
+      .then((data) => (data.results || []).map((row) => ({
+        name: row.name, admin1: row.admin1 || "", latitude: row.latitude, longitude: row.longitude, timezone: row.timezone,
+      })))
+      .finally(() => clearTimeout(timer));
+  }
+
+  function renderCityResults(box, rows, emptyMessage) {
+    box.textContent = "";
+    if (!rows.length) {
       const empty = document.createElement("div");
       empty.className = "fine";
-      empty.textContent = "搜索失败，请稍后再试";
+      empty.textContent = emptyMessage || "没有找到这个城市";
       box.appendChild(empty);
+      return;
     }
+    rows.forEach((row) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = row.label || (row.name + (row.admin1 ? " · " + row.admin1 : ""));
+      btn.addEventListener("click", () => usePlace({
+        name: row.name,
+        lat: row.latitude,
+        lon: row.longitude,
+        tz: row.timezone,
+      }));
+      box.appendChild(btn);
+    });
   }
 
   async function useHere() {
@@ -323,7 +358,13 @@
         }
       } catch (err) { /* 没有逆地理也没关系 */ }
       if (revision !== placeRevision) return;
-      await usePlace({ name, lat: pos.coords.latitude, lon: pos.coords.longitude });
+      let tz;
+      const cities = window.PondCities;
+      if (cities) {
+        const local = cities.resolvePlace(name, pos.coords.latitude, pos.coords.longitude, 120);
+        if (local) { name = local.name; tz = local.timezone; }
+      }
+      await usePlace({ name, lat: pos.coords.latitude, lon: pos.coords.longitude, tz });
       if (placeRevision === revision + 1) $("use-geo").checked = true;
       return;
     } catch (err) { if (revision !== placeRevision) return; /* 继续用网络位置 */ }
@@ -335,17 +376,24 @@
       let name = data.city || "当前位置";
       let lat = data.latitude;
       let lon = data.longitude;
-      try {
-        const found = await fetch("https://geocoding-api.open-meteo.com/v1/search?name=" + encodeURIComponent(name) + "&count=1&language=zh&format=json");
-        const json = await found.json();
-        if (json.results && json.results[0]) {
-          name = json.results[0].name;
-          lat = json.results[0].latitude;
-          lon = json.results[0].longitude;
-        }
-      } catch (err) { /* 用原始坐标 */ }
+      let tz = data.timezone && data.timezone.id;
+      const cities = window.PondCities;
+      if (cities && ["CN", "TW", "HK", "MO"].indexOf(data.country_code) >= 0) {
+        const local = cities.resolvePlace(name, lat, lon);
+        if (local) { name = local.name; lat = local.latitude; lon = local.longitude; tz = local.timezone; }
+      } else {
+        try {
+          const found = await fetch("https://geocoding-api.open-meteo.com/v1/search?name=" + encodeURIComponent(name) + "&count=1&language=zh&format=json");
+          const json = await found.json();
+          if (json.results && json.results[0]) {
+            name = json.results[0].name;
+            lat = json.results[0].latitude;
+            lon = json.results[0].longitude;
+          }
+        } catch (err) { /* 用原始坐标 */ }
+      }
       if (revision !== placeRevision) return;
-      await usePlace({ name, lat, lon, tz: data.timezone && data.timezone.id });
+      await usePlace({ name, lat, lon, tz });
       if (placeRevision === revision + 1) $("use-geo").checked = true;
     } catch (err) {
       if (revision !== placeRevision) return;
