@@ -7,7 +7,7 @@
   "scripts": {
     "start": "electron .",
     "check:updates": "node tools/check-update-config.cjs",
-    "test": "node --test test/seasons.test.cjs test/season-render.test.cjs test/fish-species.test.cjs test/fish-motion.test.cjs test/fish-formation.test.cjs test/boss-activity.test.cjs test/boss-dance.test.cjs test/pond-performance.test.cjs test/performance-governor.test.cjs test/music-beat.test.cjs test/friend-outfit.test.cjs test/updater.test.cjs test/update-handoff.test.cjs test/update-launch.test.cjs test/installer.test.cjs test/desktop-layout.test.cjs test/native-desktop.test.cjs test/china-cities.test.cjs",
+    "test": "node --test test/seasons.test.cjs test/season-render.test.cjs test/fish-species.test.cjs test/fish-motion.test.cjs test/fish-formation.test.cjs test/boss-activity.test.cjs test/boss-dance.test.cjs test/pond-performance.test.cjs test/performance-governor.test.cjs test/music-beat.test.cjs test/friend-outfit.test.cjs test/updater.test.cjs test/update-handoff.test.cjs test/update-launch.test.cjs test/installer.test.cjs test/desktop-layout.test.cjs test/native-desktop.test.cjs test/dock.test.cjs test/china-cities.test.cjs",
     "dist": "electron-builder --win portable"
   },
   "build": {
@@ -20,6 +20,7 @@
       "main.js",
       "desktop-layout.js",
       "preload.js",
+      "journal-editor-preload.js",
       "media-monitor.js",
       "media-watch.ps1",
       "music-beat.js",
@@ -33,9 +34,11 @@
       "portable-update.ps1",
       "wallpaper.ps1",
       "desk-input.cs",
+      "dock/**",
       "assets/**",
       "web/**"
     ],
+    "asarUnpack": ["dock/index-worker.js", "dock/search-model.js"],
     "win": {
       "target": [
         "portable"

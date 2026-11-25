@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN" class="bar-page">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>塘里 Dock</title>
+  <link rel="stylesheet" href="dock.css">
+</head>
+<body>
+  <nav id="bar" class="bar" aria-label="塘里 Dock" data-material="frosted">
+    <button id="start" type="button" class="tile system-tile" title="Windows 开始菜单" aria-label="Windows 开始菜单"><span class="windows-mark" aria-hidden="true"></span></button>
+    <div id="items" class="bar-items" aria-label="固定项和运行窗口"></div>
+    <div class="bar-system">
+      <button id="add" type="button" class="tile system-tile" title="固定文件或文件夹" aria-label="固定文件或文件夹"><span class="add-mark" aria-hidden="true"></span></button>
+      <button id="search" type="button" class="tile system-tile" title="搜索（Ctrl+Alt+K）" aria-label="搜索"><span class="search-mark" aria-hidden="true"></span></button>
+      <button id="system" type="button" class="tile system-tile" title="系统入口与 Dock 设置" aria-label="系统入口与 Dock 设置"><span class="more-mark" aria-hidden="true"></span></button>
+    </div>
+  </nav>
+  <div id="bar-status" role="status" hidden></div>
+  <script src="bar.js"></script>
+</body>
+</html>

@@ -15,12 +15,16 @@
   <div id="toast" class="toast hidden"></div>
   <div id="menu" class="menu hidden"></div>
 
-  <aside class="journal" id="journal">
+  <aside class="journal" id="journal" data-view="compact" aria-label="池畔小记">
     <div class="j-top">
       <div class="j-kicker">池畔小记</div>
+      <div class="j-controls">
       <button id="btn-demo" class="icon-btn" type="button" title="天气与季节演示" aria-label="天气与季节演示">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5 5l1.6 1.6M17.4 17.4L19 19M19 5l-1.6 1.6M6.6 17.4L5 19" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
       </button>
+      <button id="journal-hide" class="j-link" type="button" title="隐藏池畔小记，右键水面可找回">隐藏</button>
+      <button id="journal-toggle" class="j-toggle" type="button" aria-expanded="false" aria-controls="journal-detail" aria-label="展开池畔小记"><span aria-hidden="true"></span></button>
+      </div>
     </div>
     <div class="j-time-row">
       <div class="j-time" id="clock">--:--</div>
@@ -29,16 +33,25 @@
     <div class="j-date" id="date-label"></div>
     <div class="j-place" id="place-label">正在看向水面</div>
     <div class="j-now" id="now-label">天气加载中</div>
-    <div class="j-days" id="days"></div>
+    <div id="timer-status" class="j-timer-status">计时未开始</div>
+    <div id="journal-detail" hidden>
+    <div class="j-days" id="days" aria-label="三日天气"><div class="day"><b>今天</b><span>暂无预报</span></div><div class="day"><b>明天</b><span>暂无预报</span></div><div class="day"><b>后天</b><span>暂无预报</span></div></div>
     <div class="j-updated" id="updated">每半小时刷新</div>
     <div class="j-foot">
       <span>天气数据 · Open-Meteo</span>
       <button id="btn-city" type="button">设置</button>
     </div>
+    <section class="j-agenda" aria-label="今日事项">
+      <div class="j-section-title"><strong>今日事项</strong><button class="j-link" id="task-add" type="button">＋ 添加</button></div>
+      <form id="task-form" hidden><input id="task-input" maxlength="120" aria-label="事项内容" placeholder="写下今天要做的事" required autocomplete="off"><button type="submit">保存</button></form>
+      <ul id="task-list"></ul><p id="task-empty">今天还没有事项</p>
+    </section>
+    <div class="j-timer-actions"><span>专注计时</span><button type="button" id="timer-toggle">开始 25 分钟</button><button type="button" id="timer-reset" hidden>重置</button></div>
     <div class="j-actions">
       <button id="btn-rank" type="button">排行榜</button>
       <button id="btn-koi" type="button">我的锦鲤</button>
       <button id="btn-fish" type="button">池塘设置</button>
+    </div>
     </div>
     <div id="demo-menu" class="demo hidden" role="menu"></div>
   </aside>
@@ -158,6 +171,7 @@
   <script src="boss-character.js?v=performance1"></script>
   <script src="pond.js?v=performance1"></script>
   <script src="china-cities.js?v=1"></script>
-  <script src="ui.js?v=performance1"></script>
+  <script src="journal.js"></script>
+  <script src="ui.js?v=journal2"></script>
 </body>
 </html>

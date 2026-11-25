@@ -124,7 +124,9 @@
     $(id).classList.add("hidden");
   }
 
+  let lastReportedHour = null;
   function clockTick() {
+    window.pondJournal.tick();
     const tz = (place && place.tz) || "Asia/Shanghai";
     let parts;
     try {
@@ -151,6 +153,11 @@
     $("date-label").textContent = (parts.month || "") + "月" + (parts.day || "") + "日 " + (parts.weekday || "");
     $("tz-label").textContent = tz.indexOf("Shanghai") >= 0 ? "北京时间" : "当地时间";
     if (window.Pond && Pond.setClock) Pond.setClock(tz);
+    const hour = Number(hh);
+    if (hour !== lastReportedHour && window.scenePreview?.hour) {
+      lastReportedHour = hour;
+      window.scenePreview.hour(hour);
+    }
   }
 
   function renderDays() {
@@ -612,6 +619,7 @@
       ["排行榜", () => { renderRank(); openOverlay("overlay-rank"); }],
       ["我的锦鲤", () => { renderGallery(); openOverlay("overlay-koi"); }],
       ["池塘设置", openFishSettings],
+      [window.pondJournal.hidden() ? "显示池畔小记" : "隐藏池畔小记", window.pondJournal.toggleVisible],
       [Pond.bossVisible() ? "隐藏第一位好兄弟" : "显示第一位好兄弟", () => Pond.setBossVisible(!Pond.bossVisible())],
       [Pond.friendVisible() ? "隐藏第二位好兄弟" : "显示第二位好兄弟", () => Pond.setFriendVisible(!Pond.friendVisible())],
       [Pond.bossSound() ? "关闭鞭子音效" : "开启鞭子音效", () => Pond.setBossSound(!Pond.bossSound())],
@@ -619,6 +627,9 @@
       [wallpaperOn ? "退出全屏" : "全屏", toggleFull],
     ];
     if (window.appUpdates) items.splice(items.length - 1, 0, ["检查更新", () => window.appUpdates.check().catch(() => {})]);
+    if (window.desktopTools) items.splice(items.length - 1, 0,
+      ["Dock 设置", () => window.desktopTools.open("dock")],
+      ["全盘搜索", () => window.desktopTools.open("search")]);
     items.forEach(([label, fn]) => {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -826,6 +837,11 @@
     window.addEventListener("pointercancel", () => { drawing = false; });
 
     $("pond").addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      buildMenu(e.clientX, e.clientY);
+    });
+    $("journal").addEventListener("contextmenu", (e) => {
+      if (e.target.closest("input")) return;
       e.preventDefault();
       buildMenu(e.clientX, e.clientY);
     });

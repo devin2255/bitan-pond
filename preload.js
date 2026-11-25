@@ -23,4 +23,10 @@ contextBridge.exposeInMainWorld("scenePreview", {
   state: () => ipcRenderer.invoke("scene:preview-state"),
   set: (key, value) => ipcRenderer.send("scene:preview", key, value),
   onChange: (cb) => ipcRenderer.on("scene:preview", (_event, value) => cb(value)),
+  hour: (value) => ipcRenderer.send("scene:hour", value),
+});
+
+contextBridge.exposeInMainWorld("desktopTools", {
+  open: (action) => ipcRenderer.send("desktop-tools:open", action),
+  editTask: () => ipcRenderer.invoke("journal:edit"),
 });

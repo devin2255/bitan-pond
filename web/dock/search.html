@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'">
+  <title>塘里搜索</title>
+  <link rel="stylesheet" href="dock.css">
+</head>
+<body class="search-page">
+  <header class="search-title"><strong>塘里搜索</strong><div><button id="configure" type="button">搜索范围</button><button id="close" type="button" aria-label="关闭搜索">×</button></div></header>
+  <div class="search-input"><span class="search-mark" aria-hidden="true"></span><input id="query" type="search" autocomplete="off" spellcheck="false" maxlength="240" placeholder="搜索应用、文件、文件夹" aria-label="搜索应用、文件、文件夹"></div>
+  <nav class="categories" aria-label="搜索分类">
+    <button type="button" data-kind="all" aria-pressed="true">全部</button>
+    <button type="button" data-kind="app" aria-pressed="false">应用</button>
+    <button type="button" data-kind="file" aria-pressed="false">文件</button>
+    <button type="button" data-kind="folder" aria-pressed="false">文件夹</button>
+  </nav>
+  <p id="scope" role="status"></p>
+  <div id="results" class="results" aria-label="搜索结果"></div>
+  <div id="result-menu" class="result-menu" hidden></div>
+  <footer class="search-foot"><span id="search-status">用 D: 限定盘符，ext:pdf 限定扩展名</span><span>↑ ↓ 选择 · 回车打开 · Esc 关闭</span></footer>
+  <script src="search.js"></script>
+</body>
+</html>

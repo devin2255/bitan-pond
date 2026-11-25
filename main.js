@@ -10,6 +10,7 @@ const { checkForUpdate, downloadUpdate } = require("./updater");
 const { waitForUpdaterHandoff } = require("./update-handoff");
 const { createUpdaterLaunch } = require("./update-launch");
 const { matchDisplays, targetAt, normalizedPoint } = require("./desktop-layout");
+const { createDock } = require("./dock/controller");
 
 app.setName("塘里");
 const testUserData = process.env.TANGLI_TEST_MODE === "1" && process.env.TANGLI_TEST_USER_DATA;
@@ -41,8 +42,12 @@ let lastNotifiedUpdate = null;
 let updateStartupTimer = null;
 let updateInterval = null;
 let trayMonitor = null;
+let applicationQuitting = false;
+let dockTools = null;
+let pondHour = null;
 const wallpaperWindows = new Map();
 let wallpaperStarting = false;
+let dockDesktopShown = false;
 let displayRefreshTimer = null;
 let displayRefreshBusy = false;
 let deskHover = null;
@@ -229,12 +234,23 @@ function makeIcon() {
 function refreshTrayMenu() {
   if (!tray) return;
   const on = wallpaperOn || fullscreenFallback;
+  const dockState = dockTools?.state();
   const updateLabel = updatePhase === "checking" ? "正在检查更新…" :
     updatePhase === "downloading" ? `正在下载更新 ${updatePercent}%` :
     updatePhase === "installing" ? "正在启动更新…" :
     updatePhase === "ready" || updatePhase === "confirming" ? `安装更新 v${updateDownload.version}…` : "检查更新…";
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: on ? "恢复窗口" : "铺到桌面", click: () => toggleWallpaper() },
+    ...(dockState ? [
+      { type: "checkbox", label: "启用塘里 Dock", checked: dockState.settings.enabled, click: (item) => {
+        try { dockTools.setEnabled(item.checked); }
+        catch (error) { dockTools.report(error); balloon(error.message); refreshTrayMenu(); }
+      } },
+      { label: "Dock 设置", click: () => dockTools.showSettings() },
+      { label: "全盘搜索", click: () => dockTools.showSearch() },
+      ...(dockState.takeover ? [{ label: "恢复 Windows 任务栏", click: dockTools.stopGuard }] : []),
+      { type: "separator" },
+    ] : []),
     { label: updateLabel, enabled: !["checking", "downloading", "prompting", "confirming", "installing"].includes(updatePhase), click: () => checkUpdates(true) },
     { label: `当前版本 ${app.getVersion()}`, enabled: false },
     { type: "separator" },
@@ -855,6 +871,7 @@ function detachSync() {
 }
 
 async function leaveSpecial() {
+  dockDesktopShown = false;
   stopDeskInput();
   unregisterWallpaperHotkey();
   if (displayRefreshTimer) { clearTimeout(displayRefreshTimer); displayRefreshTimer = null; }
@@ -910,6 +927,15 @@ async function toggleWallpaper() {
   }
 }
 
+async function showDockDesktop(request) {
+  while (toggleBusy && !applicationQuitting) await delay(50);
+  if (applicationQuitting) return;
+  if (!wallpaperOn) return request("toggle");
+  const show = !dockDesktopShown;
+  await request(show ? "minimize" : "restore");
+  dockDesktopShown = show && wallpaperOn;
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1280,
@@ -958,6 +984,10 @@ function createWindow() {
   });
 
   win.on("close", () => detachSync());
+  win.on("closed", () => {
+    win = null;
+    if (!applicationQuitting) app.quit();
+  });
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.loadFile(path.join(__dirname, "web", "index.html"));
 }
@@ -1005,6 +1035,53 @@ ipcMain.handle("music:rhythm-enabled", (_event, enabled) => {
   return rhythmEnabled;
 });
 ipcMain.handle("scene:preview-state", () => ({ ...previewState }));
+function updateDockTime() {
+  const previewHours = { dawn: 7, noon: 12, dusk: 18, night: 23 };
+  dockTools?.updateHour(previewHours[previewState.time] ?? pondHour);
+}
+
+function fromPond(event) {
+  return event.senderFrame?.frameTreeNodeId === event.sender.mainFrame.frameTreeNodeId &&
+    (win?.webContents.id === event.sender.id || [...wallpaperWindows.values()].some((entry) =>
+      !entry.window.isDestroyed() && entry.window.webContents.id === event.sender.id));
+}
+
+ipcMain.on("scene:hour", (event, hour) => {
+  if (event.sender.id !== win?.webContents.id || !fromPond(event) || !Number.isInteger(hour) || hour < 0 || hour > 24) return;
+  pondHour = hour % 24;
+  updateDockTime();
+});
+let journalEditor, finishJournalEntry;
+ipcMain.on("desktop-tools:open", (event, action) => {
+  if (!fromPond(event)) return;
+  if (action === "dock") dockTools?.showSettings();
+  if (action === "search") dockTools?.showSearch();
+});
+ipcMain.handle("journal:edit", (event) => {
+  if (!fromPond(event)) return null;
+  if (journalEditor && !journalEditor.isDestroyed()) { journalEditor.show(); journalEditor.focus(); return null; }
+  return new Promise((resolve) => {
+    const owner = event.sender;
+    journalEditor = new BrowserWindow({ width: 400, height: 152, useContentSize: true, show: false,
+      resizable: false, autoHideMenuBar: true, backgroundColor: "#f6f4ef",
+      webPreferences: { preload: path.join(__dirname, "journal-editor-preload.js"), sandbox: true, contextIsolation: true, nodeIntegration: false } });
+    finishJournalEntry = resolve;
+    const close = () => journalEditor?.close();
+    owner.once("destroyed", close);
+    journalEditor.once("ready-to-show", () => { journalEditor?.show(); });
+    journalEditor.once("closed", () => { owner.removeListener("destroyed", close); journalEditor = finishJournalEntry = null; resolve(null); });
+    journalEditor.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    journalEditor.webContents.on("will-navigate", (e) => e.preventDefault());
+    journalEditor.loadFile(path.join(__dirname, "web", "journal-entry.html")).catch((error) => { logWallpaperError(error); close(); });
+  });
+});
+ipcMain.handle("journal:submit", (event, text) => {
+  if (event.sender !== journalEditor?.webContents || event.senderFrame?.frameTreeNodeId !== event.sender.mainFrame.frameTreeNodeId) return;
+  if (typeof text === "string" && text.trim()) {
+    finishJournalEntry(text.trim().slice(0, 120));
+    journalEditor.close();
+  }
+});
 ipcMain.on("scene:preview", (_event, key, value) => {
   const choices = {
     weather: ["auto", "clear", "wind", "rain", "snow", "drizzle"],
@@ -1016,6 +1093,7 @@ ipcMain.on("scene:preview", (_event, key, value) => {
   if (!Object.prototype.hasOwnProperty.call(choices, key) || !choices[key].includes(value)) return;
   previewState[key] = value;
   broadcast("scene:preview", { key, value });
+  if (key === "time") updateDockTime();
 });
 
 app.whenReady().then(() => {
@@ -1031,6 +1109,17 @@ app.whenReady().then(() => {
     }
     callback({ responseHeaders: headers });
   });
+  if (process.platform === "win32") {
+    dockTools = createDock({
+      refreshTray: refreshTrayMenu,
+      toggleDesktop: showDockDesktop,
+      log: (error) => {
+        try { fs.appendFileSync(path.join(app.getPath("userData"), "dock-error.log"), new Date().toISOString() + " " + String(error.stack || error) + "\n"); }
+        catch { /* Keep the pond available if the error log cannot be written. */ }
+      },
+    });
+    dockTools.start();
+  }
   ensureTray();
   screen.on("display-added", scheduleDisplayRefresh);
   screen.on("display-removed", scheduleDisplayRefresh);
@@ -1047,6 +1136,8 @@ app.whenReady().then(() => {
 
 
 app.on("before-quit", () => {
+  applicationQuitting = true;
+  dockTools?.shutdown();
   if (updateStartupTimer) clearTimeout(updateStartupTimer);
   if (updateInterval) clearInterval(updateInterval);
   if (trayMonitor) clearInterval(trayMonitor);
