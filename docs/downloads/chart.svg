@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="760" height="292" viewBox="0 0 760 292" role="img" aria-labelledby="title desc">
   <title id="title">塘里 Windows 安装包下载趋势</title>
-  <desc id="desc">截至 2026-11-28，GitHub 累计下载 553 次。曲线使用最近 90 天内记录的实际采样点。</desc>
+  <desc id="desc">截至 2026-11-28，GitHub 累计下载 555 次。曲线使用最近 90 天内记录的实际采样点。</desc>
   <rect x="0.5" y="0.5" width="759" height="291" rx="17" fill="#102c31" stroke="#295258"/>
   <g font-family="system-ui, 'Microsoft YaHei', sans-serif">
     <text x="32" y="37" fill="#dcebe7" font-size="16" font-weight="600">Windows 安装包下载量</text>
-    <text x="32" y="80" fill="#79e1bb" font-size="34" font-weight="700">553</text>
+    <text x="32" y="80" fill="#79e1bb" font-size="34" font-weight="700">555</text>
     <text x="728" y="36" text-anchor="end" fill="#c2d8d5" font-size="13">GitHub 累计下载</text>
     <text x="728" y="58" text-anchor="end" fill="#9dbcb9" font-size="12">截至 2026-11-28</text>
     <g fill="#9dbcb9" font-size="12">
@@ -23,8 +23,8 @@
     <text x="511.3" y="253" text-anchor="middle">11-27</text>
     <text x="724.0" y="253" text-anchor="middle">11-28</text>
     </g>
-    <polyline points="86.0,180.4 298.7,162.3 511.3,154.4 724.0,150.8" fill="none" stroke="#79e1bb" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-    <circle cx="724.0" cy="150.8" r="4.5" fill="#79e1bb" stroke="#102c31" stroke-width="2"/>
+    <polyline points="86.0,180.4 298.7,162.3 511.3,154.4 724.0,150.5" fill="none" stroke="#79e1bb" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="724.0" cy="150.5" r="4.5" fill="#79e1bb" stroke="#102c31" stroke-width="2"/>
     <text x="32" y="274" fill="#9dbcb9" font-size="12">最近 90 天内的采样记录</text>
   </g>
 </svg>
